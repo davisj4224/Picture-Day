@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in — Picture Day</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<div class="auth">
+  <form class="card" id="form">
+    <div class="mark"><span class="lens"></span><b>Picture Day</b></div>
+    <h1>Sign in</h1>
+    <p class="hint">Staff accounts open the roster and photographs. The <b>design</b> account opens the design studio only.</p>
+
+    <div class="field">
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" required autocomplete="username" autofocus>
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" required autocomplete="current-password">
+    </div>
+
+    <div id="err" class="notice bad" hidden></div>
+    <div class="row">
+      <button class="primary" type="submit">Sign in</button>
+      <a class="btn ghost small" href="/">Back to the school page</a>
+    </div>
+  </form>
+</div>
+
+<script type="module">
+import { api, setCsrf } from '/assets/common.js';
+const form = document.getElementById('form');
+const err = document.getElementById('err');
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  err.hidden = true;
+  try {
+    const res = await api('/api/login', { method: 'POST', body: { username: form.username.value, password: form.password.value }});
+    setCsrf(res.csrf);
+    location.href = res.user.role === 'staff' ? '/admin' : '/design';
+  } catch (e2) {
+    err.textContent = e2.message;
+    err.hidden = false;
+  }
+});
+</script>
+</body>
+</html>

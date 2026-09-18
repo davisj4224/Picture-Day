@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Set up Picture Day</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<div class="auth">
+  <form class="card" id="form">
+    <div class="mark"><span class="lens"></span><b>Picture Day</b></div>
+    <h1>Create the staff account</h1>
+    <p class="hint">This is the only account that can see the roster and the photographs. Do this once, on the computer that will run picture day.</p>
+
+    <div class="field">
+      <label for="school">School name</label>
+      <input id="school" name="school" type="text" placeholder="Connellsville Area High School" autocomplete="organization">
+    </div>
+    <div class="field">
+      <label for="username">Staff username</label>
+      <input id="username" name="username" type="text" required autocomplete="username">
+    </div>
+    <div class="field">
+      <label for="password">Staff password — at least 10 characters</label>
+      <input id="password" name="password" type="password" required minlength="10" autocomplete="new-password">
+    </div>
+    <div class="field">
+      <label for="design">Design studio password (optional)</label>
+      <input id="design" name="design" type="password" minlength="6" autocomplete="new-password">
+      <p class="hint" style="margin:6px 0 0">Students sign in with the username <b>design</b> and this password. They can change the look of the site and nothing else — no roster, no photos.</p>
+    </div>
+
+    <div id="err" class="notice bad" hidden></div>
+    <button class="primary" type="submit">Create account</button>
+  </form>
+</div>
+
+<script type="module">
+import { api, setCsrf } from '/assets/common.js';
+const form = document.getElementById('form');
+const err = document.getElementById('err');
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  err.hidden = true;
+  try {
+    await api('/api/setup', { method: 'POST', body: {
+      username: form.username.value,
+      password: form.password.value,
+      designPassword: form.design.value,
+      schoolName: form.school.value
+    }});
+    const res = await api('/api/login', { method: 'POST', body: { username: form.username.value, password: form.password.value }});
+    setCsrf(res.csrf);
+    location.href = '/admin';
+  } catch (e2) {
+    err.textContent = e2.message;
+    err.hidden = false;
+  }
+});
+</script>
+</body>
+</html>

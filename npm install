@@ -1,0 +1,3 @@
+npm install
+cp .env.example .env      # paste a SESSION_SECRET into it
+npm start

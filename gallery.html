@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photos</title>
+<meta name="robots" content="noindex, nofollow">
+<link rel="stylesheet" href="/assets/brand.css">
+</head>
+<body class="brand">
+  <div class="brand-wrap">
+    <header class="brand-head">
+      <img class="logo" id="logo" alt="" hidden>
+      <div class="names">
+        <div class="school" id="school"></div>
+        <div class="event" id="event"></div>
+      </div>
+    </header>
+
+    <div id="state" class="state" hidden></div>
+
+    <section id="gallery" hidden>
+      <div class="gal-top">
+        <div>
+          <h1 id="who"></h1>
+          <p id="welcome"></p>
+        </div>
+        <div id="expires" class="event"></div>
+      </div>
+      <div class="gal-grid" id="grid"></div>
+    </section>
+
+    <footer class="brand-foot">
+      <span id="credit"></span>
+      <span>Keep this link private. It opens your family's photos.</span>
+    </footer>
+  </div>
+
+  <div class="viewer" id="viewer" aria-modal="true" role="dialog">
+    <div class="frame"><img id="big" alt=""></div>
+    <div class="tools">
+      <button id="prev">Previous</button>
+      <span class="count" id="count"></span>
+      <button id="next">Next</button>
+      <a class="save" id="save" download>Download this photo</a>
+      <button id="close">Close</button>
+    </div>
+  </div>
+
+<script type="module">
+import { applyBranding, esc } from '/assets/common.js';
+
+const token = location.pathname.split('/').pop();
+const state = document.getElementById('state');
+
+function showState(title, body) {
+  state.innerHTML = `<h1>${esc(title)}</h1><p>${esc(body)}</p>`;
+  state.hidden = false;
+}
+
+function header(b) {
+  applyBranding(b);
+  document.getElementById('school').textContent = b.schoolName;
+  document.getElementById('event').textContent = `${b.eventName} ${b.year}`;
+  document.getElementById('credit').textContent = b.credit ? `Design: ${b.credit}` : '';
+  if (b.logo) {
+    const el = document.getElementById('logo');
+    el.src = `/brand/${encodeURIComponent(b.logo)}`;
+    el.hidden = false;
+  }
+}
+
+async function sampleGallery() {
+  /* /g/preview shows the design studio's work on a gallery layout using
+     placeholders. It never touches a real student or a real photograph. */
+  const res = await fetch('/api/branding/draft');
+  const b = res.ok ? await res.json() : await fetch('/api/branding').then((r) => r.json());
+  header(b);
+  document.getElementById('who').textContent = 'Sample Student';
+  document.getElementById('welcome').textContent = b.welcome;
+  document.getElementById('expires').textContent = 'Sample gallery';
+  document.getElementById('grid').innerHTML = Array.from(
+    { length: 6 },
+    (_, i) =>
+      `<div class="gal-item" style="display:grid;place-items:center;aspect-ratio:3/4;font-family:var(--b-heading);background:color-mix(in srgb, var(--b-primary) ${8 + i * 6}%, var(--b-paper));color:color-mix(in srgb, var(--b-ink) 55%, var(--b-paper))">Photo ${i + 1}</div>`
+  ).join('');
+  document.getElementById('gallery').hidden = false;
+}
+
+async function realGallery() {
+  const res = await fetch(`/api/gallery/${encodeURIComponent(token)}`);
+  if (!res.ok) {
+    header(await fetch('/api/branding').then((r) => r.json()));
+    if (res.status === 410)
+      showState('This link has expired', 'Gallery links close a few weeks after picture day. Contact the school office and they can reopen yours.');
+    else
+      showState('This link did not open a gallery', 'Check that you copied the whole link from your email. If it still does not work, contact the school office.');
+    return;
+  }
+
+  const data = await res.json();
+  header(data.branding);
+  document.title = `${data.student.firstName}'s photos`;
+  document.getElementById('who').textContent = `${data.student.firstName} ${data.student.lastName}`;
+  document.getElementById('welcome').textContent = data.branding.welcome;
+  if (data.expiresAt)
+    document.getElementById('expires').textContent = `Open until ${new Date(data.expiresAt).toLocaleDateString()}`;
+
+  const photos = data.photos;
+  const grid = document.getElementById('grid');
+  document.getElementById('gallery').hidden = false;
+
+  if (!photos.length) {
+    showState('No photos here yet', 'The school has not added photos to this gallery. Check back in a day or two.');
+    return;
+  }
+
+  grid.innerHTML = photos
+    .map(
+      (p, i) =>
+        `<button class="gal-item" data-i="${i}" aria-label="Open photo ${i + 1}"><img loading="lazy" src="/api/gallery/${encodeURIComponent(token)}/photo/${p.id}?size=thumb" alt="Photo ${i + 1}"></button>`
+    )
+    .join('');
+
+  const viewer = document.getElementById('viewer');
+  const big = document.getElementById('big');
+  const save = document.getElementById('save');
+  const count = document.getElementById('count');
+  let idx = 0;
+
+  function open(i) {
+    idx = (i + photos.length) % photos.length;
+    const id = photos[idx].id;
+    big.src = `/api/gallery/${encodeURIComponent(token)}/photo/${id}`;
+    big.alt = `Photo ${idx + 1} of ${photos.length}`;
+    save.href = `/api/gallery/${encodeURIComponent(token)}/photo/${id}?download=1`;
+    count.textContent = `${idx + 1} of ${photos.length}`;
+    viewer.classList.add('on');
+    document.getElementById('close').focus();
+  }
+  function close() {
+    viewer.classList.remove('on');
+    big.src = '';
+  }
+
+  grid.addEventListener('click', (e) => {
+    const btn = e.target.closest('.gal-item');
+    if (btn) open(Number(btn.dataset.i));
+  });
+  document.getElementById('next').addEventListener('click', () => open(idx + 1));
+  document.getElementById('prev').addEventListener('click', () => open(idx - 1));
+  document.getElementById('close').addEventListener('click', close);
+  viewer.addEventListener('click', (e) => {
+    if (e.target === viewer || e.target.classList.contains('frame')) close();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (!viewer.classList.contains('on')) return;
+    if (e.key === 'Escape') close();
+    if (e.key === 'ArrowRight') open(idx + 1);
+    if (e.key === 'ArrowLeft') open(idx - 1);
+  });
+}
+
+if (token === 'preview') await sampleGallery();
+else await realGallery();
+</script>
+</body>
+</html>

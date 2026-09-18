@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Picture Day — staff</title>
+<meta name="robots" content="noindex">
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="rail">
+    <div class="mark">
+      <span class="lens"></span>
+      <div><b id="railSchool">Picture Day</b><span id="railYear"></span></div>
+    </div>
+
+    <nav id="nav">
+      <button data-view="floor" aria-current="true">Picture day floor</button>
+      <button data-view="roster">Roster <span class="tag" id="tagRoster">0</span></button>
+      <button data-view="cards">QR cards</button>
+      <button data-view="upload">Upload photos</button>
+      <button data-view="review">Review <span class="tag" id="tagReview">0</span></button>
+      <button data-view="galleries">Galleries</button>
+      <button data-view="email">Email <span class="tag" id="tagEmail">0</span></button>
+      <button data-view="settings">Settings</button>
+    </nav>
+
+    <footer>
+      <a href="/design" target="_blank" rel="noopener">Design studio ↗</a>
+      <a href="/" target="_blank" rel="noopener">School page ↗</a>
+      <span id="who"></span>
+      <button class="ghost small" id="signout" style="color:#cdd7db">Sign out</button>
+    </footer>
+  </aside>
+
+  <main>
+    <!-- ------------------------------------------------------- floor -->
+    <section class="view on" id="view-floor">
+      <div class="head">
+        <div>
+          <h1>Picture day floor</h1>
+          <p>One square per student, in the order the cards were printed. Click a square to jump to that student.</p>
+        </div>
+        <button class="small" id="refresh">Refresh</button>
+      </div>
+
+      <div class="board">
+        <div class="caption">
+          <b class="num" id="bigNumber">0</b>
+          <span id="bigLabel">students still to photograph</span>
+        </div>
+        <div class="tiles" id="tiles"></div>
+        <div class="legend">
+          <span><i style="background:#e3e8e3;border:1px solid #d3dad3"></i>Not photographed</span>
+          <span><i style="background:var(--accent)"></i>Too few photos</span>
+          <span><i style="background:var(--good)"></i>Photographed</span>
+          <span><i style="background:var(--primary)"></i>Gallery published</span>
+        </div>
+      </div>
+
+      <div class="counts" id="counts"></div>
+
+      <div class="card">
+        <h2>What to do next</h2>
+        <div id="nextSteps"></div>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------------ roster -->
+    <section class="view" id="view-roster">
+      <div class="head">
+        <div>
+          <h1>Roster</h1>
+          <p>Every student gets a permanent code. Import a CSV now and add stragglers by hand all year.</p>
+        </div>
+        <div class="row">
+          <button class="small" id="addStudent">Add a student</button>
+          <button class="small primary" id="importOpen">Import CSV</button>
+        </div>
+      </div>
+
+      <div class="card" id="importPanel" hidden>
+        <h2>Import a roster</h2>
+        <p class="hint">Headers can be named loosely — first name, last name, grade, teacher, parent email, student id. A single “name” column works too. Students already on the roster are updated, not duplicated.</p>
+        <div class="row">
+          <input type="file" id="csvFile" accept=".csv,text/csv">
+          <label class="row" style="margin:0"><input type="checkbox" id="replaceMode" style="width:auto"> <span style="font-weight:400">Mark everyone not in this file as inactive</span></label>
+        </div>
+        <div id="importResult" class="log" hidden></div>
+      </div>
+
+      <div class="card">
+        <div class="row" style="margin-bottom:12px">
+          <input type="search" id="search" placeholder="Search name, teacher, code or email" style="max-width:320px">
+          <select id="gradeFilter" style="max-width:160px"><option value="">All grades</option></select>
+          <span class="hint" id="rosterCount" style="margin:0"></span>
+        </div>
+        <div style="overflow-x:auto">
+          <table id="rosterTable">
+            <thead><tr>
+              <th>Student</th><th>Grade</th><th>Teacher</th><th>Parent email</th>
+              <th>Code</th><th>Photos</th><th>Gallery</th><th></th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------------- cards -->
+    <section class="view" id="view-cards">
+      <div class="head">
+        <div>
+          <h1>QR cards</h1>
+          <p>Eight cards to a sheet with cut guides. Print on card stock, cut, and hand them out by homeroom.</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Print a set</h2>
+        <p class="hint">Cards open in a new tab as a PDF. Print at 100% — do not let the printer scale to fit, or the codes get small.</p>
+        <div class="row">
+          <select id="cardGrade" style="max-width:200px"><option value="">Every active student</option></select>
+          <button class="primary" id="printCards">Open card PDF</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Order of operations on the day</h2>
+        <ol style="max-width:62ch;padding-left:20px">
+          <li>Photograph the student's card, filling most of the frame. One frame is enough.</li>
+          <li>Photograph the student — as many frames as you want.</li>
+          <li>Photograph the next card, and keep going.</li>
+        </ol>
+        <p class="hint" style="margin:0">If you forget a card, keep shooting. Those photos land in Review and you can assign them by name afterwards.</p>
+      </div>
+
+      <div class="card">
+        <h2>Reprint one card</h2>
+        <p class="hint">Search the roster, then use “Card” on the student's row. To retire a lost card entirely, use “New code” on that row — the old card stops working.</p>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------------ upload -->
+    <section class="view" id="view-upload">
+      <div class="head">
+        <div>
+          <h1>Upload photos</h1>
+          <p>Photos are read in this browser to find the QR cards, then sorted into students. Nothing leaves the school network.</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="field" style="max-width:340px">
+          <label for="batchName">Name this batch</label>
+          <input type="text" id="batchName" placeholder="Card 1 — Tuesday morning">
+        </div>
+        <div class="drop" id="drop">
+          <p style="margin:0 0 10px"><b>Drop the whole camera card here</b></p>
+          <p class="hint" style="margin:0 0 12px">or</p>
+          <input type="file" id="files" accept="image/*" multiple>
+          <p class="hint" style="margin:12px 0 0">Keep this tab open until the count finishes. Large batches take a few minutes.</p>
+        </div>
+        <div class="progress"><i id="bar"></i></div>
+        <div class="row" style="justify-content:space-between">
+          <span class="hint" id="progressText" style="margin:0">Waiting for files.</span>
+          <span class="hint" id="readerText" style="margin:0"></span>
+        </div>
+        <div class="log" id="uploadLog" hidden></div>
+      </div>
+
+      <div class="card">
+        <h2>Recent batches</h2>
+        <div style="overflow-x:auto"><table id="batchTable">
+          <thead><tr><th>Batch</th><th>Photos</th><th>Uploaded</th><th>Sorted</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------------ review -->
+    <section class="view" id="view-review">
+      <div class="head">
+        <div>
+          <h1>Review</h1>
+          <p>Photos the system could not attach to a student — usually a missed card at the start of a batch.</p>
+        </div>
+        <button class="small" id="reloadReview">Reload</button>
+      </div>
+      <div class="card">
+        <div class="row" style="margin-bottom:12px">
+          <select id="assignTo" style="max-width:320px"><option value="">Choose a student…</option></select>
+          <button id="assignSelected" class="primary">Assign selected photos</button>
+          <button id="hideSelected">Hide selected</button>
+          <span class="hint" id="selCount" style="margin:0">0 selected</span>
+        </div>
+        <div class="strip" id="reviewStrip"></div>
+      </div>
+    </section>
+
+    <!-- --------------------------------------------------- galleries -->
+    <section class="view" id="view-galleries">
+      <div class="head">
+        <div>
+          <h1>Galleries</h1>
+          <p>Look at a student's photos before anything is sent. Publishing creates the private link; it does not email anyone.</p>
+        </div>
+        <button class="primary small" id="publishReady">Publish everyone who is ready</button>
+      </div>
+
+      <div class="card">
+        <div class="row" style="margin-bottom:12px">
+          <select id="galleryStudent" style="max-width:340px"><option value="">Choose a student…</option></select>
+          <span id="galleryStatus" class="hint" style="margin:0"></span>
+        </div>
+        <div class="strip" id="galleryStrip"></div>
+        <div class="row" id="galleryActions" style="margin-top:14px" hidden>
+          <button class="primary" id="publishOne">Publish this gallery</button>
+          <button id="unpublishOne">Unpublish</button>
+          <button id="copyLink">Copy link</button>
+          <a class="btn small" id="openLink" target="_blank" rel="noopener" hidden>Open as a parent sees it ↗</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------------- email -->
+    <section class="view" id="view-email">
+      <div class="head">
+        <div>
+          <h1>Email</h1>
+          <p>Send the private links, or export them and send from the school's own mail system.</p>
+        </div>
+        <a class="btn small" href="/api/email/export.csv">Export links as CSV</a>
+      </div>
+
+      <div class="notice" id="emailNotice" hidden></div>
+
+      <div class="card">
+        <h2>Ready to send</h2>
+        <p class="hint">Published galleries whose family has not been emailed yet.</p>
+        <div style="overflow-x:auto"><table id="pendingTable">
+          <thead><tr><th><input type="checkbox" id="pendAll" style="width:auto"></th><th>Student</th><th>Grade</th><th>Parent email</th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+        <div class="row" style="margin-top:12px">
+          <button class="primary" id="sendEmails">Send to selected</button>
+          <span class="hint" id="pendCount" style="margin:0"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Message</h2>
+        <p class="hint">Use {{student}}, {{first}}, {{school}}, {{event}}, {{year}}, {{link}} and {{expires}} anywhere in the subject or body.</p>
+        <div class="field"><label for="emSubject">Subject</label><input type="text" id="emSubject"></div>
+        <div class="field"><label for="emBody">Body</label><textarea id="emBody"></textarea></div>
+        <div class="grid-2">
+          <div class="field"><label for="emFrom">From address</label><input type="text" id="emFrom" placeholder="pictureday@school.org"></div>
+          <div class="field"><label for="emReply">Reply-to</label><input type="text" id="emReply" placeholder="office@school.org"></div>
+        </div>
+        <div class="row">
+          <button class="primary" id="saveEmail">Save message</button>
+          <input type="email" id="testTo" placeholder="Send a test to…" style="max-width:240px">
+          <button id="sendTest">Send test</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------------------------------------------------- settings -->
+    <section class="view" id="view-settings">
+      <div class="head"><div><h1>Settings</h1><p>Codes, gallery lifespan, and your password.</p></div></div>
+
+      <div class="card">
+        <h2>Picture day</h2>
+        <div class="grid-2">
+          <div class="field"><label for="cfPrefix">Code prefix</label><input type="text" id="cfPrefix" maxlength="8"><p class="hint" style="margin:4px 0 0">Codes look like PD-2026-K4M7Q. Changing this only affects codes made from now on.</p></div>
+          <div class="field"><label for="cfYear">Year</label><input type="text" id="cfYear" maxlength="8"></div>
+          <div class="field"><label for="cfDays">Galleries stay open for (days)</label><input type="number" id="cfDays" min="1" max="365"></div>
+          <div class="field"><label for="cfMin">A student counts as photographed at</label><input type="number" id="cfMin" min="1" max="20"><p class="hint" style="margin:4px 0 0">photos or more</p></div>
+          <div class="field"><label for="cfUrl">Address families will use</label><input type="text" id="cfUrl" placeholder="https://pictureday.school.org"><p class="hint" style="margin:4px 0 0">Goes into the gallery links in emails.</p></div>
+        </div>
+        <button class="primary" id="saveConfig">Save settings</button>
+      </div>
+
+      <div class="card">
+        <h2>Your password</h2>
+        <div class="grid-2">
+          <div class="field"><label for="pwOld">Current password</label><input type="password" id="pwOld" autocomplete="current-password"></div>
+          <div class="field"><label for="pwNew">New password</label><input type="password" id="pwNew" autocomplete="new-password"></div>
+        </div>
+        <button id="savePassword">Change password</button>
+      </div>
+
+      <div class="card">
+        <h2>Before you put this on the open internet</h2>
+        <p class="hint" style="margin:0">Student photographs and parent addresses are the two most sensitive things a school holds. Read the deployment checklist in README.md with whoever runs your network, and get the plan approved before this server is reachable from outside the building.</p>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="lightbox" id="lightbox"><img id="lightboxImg" alt=""></div>
+<script type="module" src="/assets/admin.js"></script>
+</body>
+</html>
