@@ -6,7 +6,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch PictureDayFinal/server.js",
+    "dev": "node --watch server.js",
     "reset-password": "node scripts/reset-password.js"
   },
   "engines": {
@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
-    "better-sqlite3": "^13.0.3",
+    "better-sqlite3": "^11.5.0",
     "csv-parse": "^5.5.6",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",

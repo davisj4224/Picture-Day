@@ -19,36 +19,7 @@
     </div>
     <div class="field">
       <label for="password">Password</label>
-      <div class="password-wrap">
-        <input id="password" name="password" type="password" required autocomplete="current-password">
-        <label class="toggle" for="showPassword">
-          <input id="showPassword" type="checkbox">
-          <span>Show</span>
-        </label>
-      </div>
-    </div>
-
-    <div class="row toggle-row">
-      <button type="button" class="btn ghost small" id="toggleReset">Reset password</button>
-    </div>
-
-    <div class="card nested" id="resetPanel" hidden>
-      <h2>Reset a password</h2>
-      <p class="hint">Use this to set a new password for a staff or design account.</p>
-      <div class="field">
-        <label for="resetUsername">Username</label>
-        <input id="resetUsername" type="text" autocomplete="username">
-      </div>
-      <div class="field">
-        <label for="resetPassword">New password</label>
-        <input id="resetPassword" type="password" minlength="10" autocomplete="new-password">
-      </div>
-      <div class="row reset-actions">
-        <button type="button" class="primary" id="resetSubmit">Set new password</button>
-        <button type="button" class="btn ghost small" id="cancelReset">Cancel</button>
-      </div>
-      <div id="resetNotice" class="notice good" hidden></div>
-      <div id="resetErr" class="notice bad" hidden></div>
+      <input id="password" name="password" type="password" required autocomplete="current-password">
     </div>
 
     <div id="err" class="notice bad" hidden></div>
@@ -63,60 +34,6 @@
 import { api, setCsrf } from '/assets/common.js';
 const form = document.getElementById('form');
 const err = document.getElementById('err');
-const password = document.getElementById('password');
-const showPassword = document.getElementById('showPassword');
-const toggleReset = document.getElementById('toggleReset');
-const resetPanel = document.getElementById('resetPanel');
-const resetUsername = document.getElementById('resetUsername');
-const resetPassword = document.getElementById('resetPassword');
-const resetErr = document.getElementById('resetErr');
-const resetNotice = document.getElementById('resetNotice');
-const cancelReset = document.getElementById('cancelReset');
-const resetSubmit = document.getElementById('resetSubmit');
-
-showPassword.addEventListener('change', () => {
-  password.type = showPassword.checked ? 'text' : 'password';
-});
-
-toggleReset.addEventListener('click', () => {
-  resetPanel.hidden = !resetPanel.hidden;
-  resetErr.hidden = true;
-  resetNotice.hidden = true;
-  if (!resetPanel.hidden) resetUsername.focus();
-});
-
-cancelReset.addEventListener('click', () => {
-  resetPanel.hidden = true;
-  resetUsername.value = '';
-  resetPassword.value = '';
-  resetErr.hidden = true;
-  resetNotice.hidden = true;
-});
-
-resetSubmit.addEventListener('click', async () => {
-  resetErr.hidden = true;
-  resetNotice.hidden = true;
-  const username = resetUsername.value.trim().toLowerCase();
-  const nextPassword = resetPassword.value;
-  if (!username || nextPassword.length < 10) {
-    resetErr.textContent = 'Enter a username and a new password with at least 10 characters.';
-    resetErr.hidden = false;
-    return;
-  }
-  try {
-    await api('/api/reset-password', { method: 'POST', body: { username, password: nextPassword } });
-    resetNotice.textContent = 'Password updated. You can sign in with the new password.';
-    resetNotice.hidden = false;
-    resetUsername.value = '';
-    resetPassword.value = '';
-    form.username.value = username;
-    form.password.value = '';
-    form.password.focus();
-  } catch (e2) {
-    resetErr.textContent = e2.message;
-    resetErr.hidden = false;
-  }
-});
 
 form.addEventListener('submit', async (e) => {
   e.preventDefault();

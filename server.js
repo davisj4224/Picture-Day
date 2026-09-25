@@ -53,6 +53,10 @@ app.use(
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: false }));
+app.use((req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
 
 if (!process.env.SESSION_SECRET) {
   console.warn('\n  ⚠  SESSION_SECRET is not set in .env — using a temporary one.');
@@ -165,21 +169,6 @@ app.post(
       req.session.csrf = crypto.randomBytes(18).toString('base64url');
       res.json({ ok: true, user: req.session.user, csrf: req.session.csrf });
     });
-  })
-);
-
-app.post(
-  '/api/reset-password',
-  loginLimiter,
-  ok((req, res) => {
-    const { username, password } = req.body || {};
-    const cleanUsername = String(username || '').trim().toLowerCase();
-    if (!cleanUsername || !password || String(password).length < 10)
-      return res.status(400).json({ error: 'Provide a username and a new password with at least 10 characters.' });
-    const row = db.prepare('SELECT id FROM users WHERE username = ?').get(cleanUsername);
-    if (!row) return res.status(404).json({ error: 'No account matches that username.' });
-    db.prepare('UPDATE users SET password = ? WHERE id = ?').run(bcrypt.hashSync(String(password), 12), row.id);
-    res.json({ ok: true });
   })
 );
 
@@ -890,6 +879,46 @@ function sanitizeBranding(input, previous) {
   const hex = (v, fallback) => (/^#[0-9a-fA-F]{6}$/.test(String(v || '')) ? String(v) : fallback);
   const font = (v, fallback) => (SAFE_FONTS.includes(v) ? v : fallback);
   const pick = (v, list, fallback) => (list.includes(v) ? v : fallback);
+  const surface = (value, fallback, extra = {}) => ({
+    primary: hex(value?.primary, fallback.primary),
+    accent: hex(value?.accent, fallback.accent),
+    ink: hex(value?.ink, fallback.ink),
+    paper: hex(value?.paper, fallback.paper),
+    panel: hex(value?.panel, fallback.panel),
+    backdrop: pick(value?.backdrop, ['paper', 'tint', 'grid', 'halftone'], fallback.backdrop),
+    ...extra(value, fallback)
+  });
+  const layout = (value, allowed, fallback) => {
+    const next = Array.isArray(value) ? value.filter((item) => allowed.includes(item)) : [];
+    return [...new Set([...next, ...fallback.filter((item) => !next.includes(item))])];
+  };
+  const blocks = (value, fallback) => {
+    const allowedImages = new Set((fallback || []).filter((block) => block.type === 'image').map((block) => block.src));
+    return (Array.isArray(value) ? value : fallback || []).slice(0, 24).map((block, index) => {
+      const type = block?.type === 'image' ? 'image' : 'text';
+      const number = (candidate, min, max, defaultValue) => {
+        const parsed = Number(candidate);
+        return Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : defaultValue;
+      };
+      const text = typeof block?.text === 'string' ? block.text.trim().slice(0, 240) : '';
+      const src = typeof block?.src === 'string' && /^[\w.-]+$/.test(block.src) && allowedImages.has(block.src) ? block.src : '';
+      return {
+        id: typeof block?.id === 'string' && /^[\w-]+$/.test(block.id) ? block.id : `block-${index + 1}`,
+        type,
+        text,
+        src,
+        x: number(block?.x, 0, 92, 8),
+        y: number(block?.y, 0, 92, 8),
+        width: number(block?.width, 8, 100, 32),
+        size: number(block?.size, 0.7, 8, 1.4),
+        color: pick(block?.color, ['primary', 'accent', 'ink', 'paper'], 'ink')
+      };
+    }).filter((block) => (block.type === 'text' && block.text) || (block.type === 'image' && block.src));
+  };
+  const offset = (value, fallback) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.max(-40, Math.min(40, parsed)) : fallback;
+  };
 
   return {
     schoolName: str(input.schoolName, 80, previous.schoolName),
@@ -899,6 +928,7 @@ function sanitizeBranding(input, previous) {
     welcome: str(input.welcome, 600, previous.welcome),
     logo: previous.logo,
     artwork: previous.artwork,
+    galleryArtwork: previous.galleryArtwork,
     credit: str(input.credit, 160, ''),
     palette: {
       primary: hex(input.palette?.primary, previous.palette.primary),
@@ -906,6 +936,33 @@ function sanitizeBranding(input, previous) {
       ink: hex(input.palette?.ink, previous.palette.ink),
       paper: hex(input.palette?.paper, previous.palette.paper)
     },
+    surfaces: {
+      home: surface(input.surfaces?.home, previous.surfaces.home, (value, fallback) => ({
+        heroTreatment: pick(value?.heroTreatment, ['solid', 'wash', 'duotone'], fallback.heroTreatment)
+      })),
+      gallery: surface(input.surfaces?.gallery, previous.surfaces.gallery, (value, fallback) => ({
+        cardStyle: pick(value?.cardStyle, ['clean', 'outline', 'shadow'], fallback.cardStyle)
+      }))
+    },
+    layouts: {
+      home: layout(input.layouts?.home, ['intro', 'artwork', 'how', 'card', 'photos', 'footer'], previous.layouts.home),
+      gallery: layout(input.layouts?.gallery, ['galleryHeader', 'galleryWelcome', 'photoGrid', 'footer'], previous.layouts.gallery)
+    },
+    hero: {
+      x: offset(input.hero?.x, previous.hero.x),
+      y: offset(input.hero?.y, previous.hero.y),
+      headline: str(input.hero?.headline, 140, ''),
+      tagline: str(input.hero?.tagline, 240, '')
+    },
+    heroArt: {
+      x: offset(input.heroArt?.x, previous.heroArt.x),
+      y: offset(input.heroArt?.y, previous.heroArt.y),
+      caption: str(input.heroArt?.caption, 100, previous.heroArt.caption),
+      kicker: str(input.heroArt?.kicker, 40, previous.heroArt.kicker),
+      title: str(input.heroArt?.title, 60, previous.heroArt.title),
+      subline: str(input.heroArt?.subline, 80, previous.heroArt.subline)
+    },
+    blocks: blocks(input.blocks, previous.blocks),
     headingFont: font(input.headingFont, previous.headingFont),
     bodyFont: font(input.bodyFont, previous.bodyFont),
     cornerStyle: pick(input.cornerStyle, ['sharp', 'soft', 'round'], previous.cornerStyle),
@@ -955,7 +1012,7 @@ const brandUpload = multer({
 });
 
 app.post(
-  '/api/branding/:kind(logo|artwork)',
+  '/api/branding/:kind(logo|artwork|galleryArtwork)',
   requireUser,
   brandUpload.single('image'),
   ok((req, res) => {
@@ -967,8 +1024,31 @@ app.post(
   })
 );
 
+app.post(
+  '/api/branding/block-image',
+  requireUser,
+  brandUpload.single('image'),
+  ok((req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'No image was received.' });
+    const draft = branding('draft');
+    draft.blocks = [...(draft.blocks || []), {
+      id: `block-${crypto.randomBytes(6).toString('hex')}`,
+      type: 'image',
+      src: req.file.filename,
+      text: '',
+      x: 8,
+      y: 8,
+      width: 32,
+      size: 1.4,
+      color: 'ink'
+    }].slice(0, 24);
+    setSetting('branding_draft', draft);
+    res.json(draft);
+  })
+);
+
 app.delete(
-  '/api/branding/:kind(logo|artwork)',
+  '/api/branding/:kind(logo|artwork|galleryArtwork)',
   requireUser,
   ok((req, res) => {
     const draft = branding('draft');
@@ -1066,7 +1146,7 @@ app.use((err, req, res, next) => {
   res.status(500).send(msg);
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   const first = userCount() === 0;
   console.log(`\n  Picture Day is running at http://localhost:${PORT}`);
   console.log(first ? '  First run — open that address to create the staff account.\n' : '  Staff sign-in: /login\n');

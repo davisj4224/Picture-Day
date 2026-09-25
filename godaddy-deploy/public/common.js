@@ -73,15 +73,20 @@ export function loadFonts(names) {
   link.href = `https://fonts.googleapis.com/css2?${families}&display=swap`;
 }
 
-export function applyBranding(b, root = document.documentElement) {
+export function applyBranding(b, root = document.documentElement, surfaceName = 'home') {
+  const surface = b.surfaces?.[surfaceName] || b.palette;
   const radius = { sharp: '0px', soft: '8px', round: '20px' }[b.cornerStyle] || '8px';
-  root.style.setProperty('--b-primary', b.palette.primary);
-  root.style.setProperty('--b-accent', b.palette.accent);
-  root.style.setProperty('--b-ink', b.palette.ink);
-  root.style.setProperty('--b-paper', b.palette.paper);
+  root.style.setProperty('--b-primary', surface.primary);
+  root.style.setProperty('--b-accent', surface.accent);
+  root.style.setProperty('--b-ink', surface.ink);
+  root.style.setProperty('--b-paper', surface.paper);
+  root.style.setProperty('--b-panel', surface.panel || surface.paper);
   root.style.setProperty('--b-radius', radius);
   root.style.setProperty('--b-heading', fontStack(b.headingFont));
   root.style.setProperty('--b-body', fontStack(b.bodyFont));
-  root.dataset.backdrop = b.backdrop || 'paper';
+  root.dataset.backdrop = surface.backdrop || b.backdrop || 'paper';
+  root.dataset.surface = surfaceName;
+  if (surface.heroTreatment) root.dataset.heroTreatment = surface.heroTreatment;
+  if (surface.cardStyle) root.dataset.cardStyle = surface.cardStyle;
   loadFonts([b.headingFont, b.bodyFont]);
 }

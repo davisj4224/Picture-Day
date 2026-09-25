@@ -43,6 +43,28 @@ account and, if you want one, the student `design` password. There is no way
 back into this screen afterwards — if you forget the password, run
 `npm run reset-password -- yourname anewpassword`.
 
+## Deploying to GoDaddy Web Hosting
+
+This application requires GoDaddy hosting with **Setup Node.js App** or
+**Application Manager** in cPanel. GoDaddy domain-only and static Website
+Builder plans cannot run it.
+
+1. In cPanel, create a Node.js application using Node 18 or newer.
+2. Set the application root to `PictureDayFinal` and the startup file to
+      `server.js`.
+3. Upload this folder's contents into the application root, then run
+      `npm install --production` there.
+4. Add `NODE_ENV=production`, `SECURE_COOKIES=true`, and a long random
+      `SESSION_SECRET` in the application's environment variables. Do not upload
+      `.env` to source control.
+5. Start or restart the application and enable HTTPS for the domain.
+6. Complete the one-time setup at `/setup`.
+7. In Admin → Settings, set **Address families will use** to the public HTTPS
+      address, such as `https://photos.example.org`.
+
+The application must be able to write to `data/` and `uploads/`. Back up both
+locations because they contain the database and uploaded photographs.
+
 **Editing the site:** open the whole `school-picture-day` folder in VS Code
 (File → Open Folder). The look of the parent-facing pages lives in
 `public/brand.css`; the staff screens are `public/app.css`. Most branding

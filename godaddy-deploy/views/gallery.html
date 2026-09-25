@@ -9,28 +9,31 @@
 </head>
 <body class="brand">
   <div class="brand-wrap">
-    <header class="brand-head">
+    <header class="brand-head gallery-block" data-block="galleryHeader">
       <img class="logo" id="logo" alt="" hidden>
       <div class="names">
         <div class="school" id="school"></div>
         <div class="event" id="event"></div>
       </div>
+      <img class="gallery-art" id="galleryArt" alt="" hidden>
     </header>
 
     <div id="state" class="state" hidden></div>
 
+    <main id="gallery-layout" class="gallery-layout">
     <section id="gallery" hidden>
-      <div class="gal-top">
+      <div class="gal-top gallery-block" data-block="galleryWelcome">
         <div>
           <h1 id="who"></h1>
           <p id="welcome"></p>
         </div>
         <div id="expires" class="event"></div>
       </div>
-      <div class="gal-grid" id="grid"></div>
+      <div class="gal-grid gallery-block" id="grid" data-block="photoGrid"></div>
     </section>
+    </main>
 
-    <footer class="brand-foot">
+    <footer class="brand-foot gallery-block" data-block="footer">
       <span id="credit"></span>
       <span>Keep this link private. It opens your family's photos.</span>
     </footer>
@@ -59,7 +62,7 @@ function showState(title, body) {
 }
 
 function header(b) {
-  applyBranding(b);
+  applyBranding(b, document.documentElement, 'gallery');
   document.getElementById('school').textContent = b.schoolName;
   document.getElementById('event').textContent = `${b.eventName} ${b.year}`;
   document.getElementById('credit').textContent = b.credit ? `Design: ${b.credit}` : '';
@@ -68,6 +71,20 @@ function header(b) {
     el.src = `/brand/${encodeURIComponent(b.logo)}`;
     el.hidden = false;
   }
+  if (b.galleryArtwork) {
+    const art = document.getElementById('galleryArt');
+    art.src = `/brand/${encodeURIComponent(b.galleryArtwork)}`;
+    art.hidden = false;
+  }
+}
+
+function applyLayout(order) {
+  const root = document.querySelector('.brand-wrap');
+  const blocks = new Map([...root.querySelectorAll('[data-block]')].map((block) => [block.dataset.block, block]));
+  (order || ['galleryHeader', 'galleryWelcome', 'photoGrid', 'footer']).forEach((id) => {
+    const block = blocks.get(id);
+    if (block) root.append(block);
+  });
 }
 
 async function sampleGallery() {
@@ -76,6 +93,7 @@ async function sampleGallery() {
   const res = await fetch('/api/branding/draft');
   const b = res.ok ? await res.json() : await fetch('/api/branding').then((r) => r.json());
   header(b);
+  applyLayout(b.layouts?.gallery);
   document.getElementById('who').textContent = 'Sample Student';
   document.getElementById('welcome').textContent = b.welcome;
   document.getElementById('expires').textContent = 'Sample gallery';
@@ -100,6 +118,7 @@ async function realGallery() {
 
   const data = await res.json();
   header(data.branding);
+  applyLayout(data.branding.layouts?.gallery);
   document.title = `${data.student.firstName}'s photos`;
   document.getElementById('who').textContent = `${data.student.firstName} ${data.student.lastName}`;
   document.getElementById('welcome').textContent = data.branding.welcome;

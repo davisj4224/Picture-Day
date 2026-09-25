@@ -16,32 +16,54 @@
         <div class="event" id="event"></div>
       </div>
       <div class="spacer"></div>
-      <a href="/login">Staff sign-in</a>
+      <a class="staff-link" href="/login">Staff sign-in <span aria-hidden="true">↗</span></a>
     </header>
 
-    <section class="brand-hero">
-      <div class="rule"></div>
-      <h1 id="headline">Picture Day</h1>
-      <p class="lede" id="tagline"></p>
-      <img class="art" id="art" alt="" hidden>
-    </section>
+    <main id="home-layout" class="home-layout">
+      <section class="brand-hero home-block" data-block="intro">
+        <div class="custom-blocks" id="custom-blocks" aria-hidden="true"></div>
+        <div class="hero-copy" id="hero-copy">
+        <p class="eyebrow"><span class="eyebrow-dot"></span> A day worth remembering</p>
+        <h1 id="headline">Picture Day</h1>
+        <p class="lede" id="tagline"></p>
+        <div class="hero-meta">
+          <span>Portraits made at school</span>
+          <span>Private family galleries</span>
+        </div>
+        </div>
+      </section>
+      <section class="hero-art-section home-block" data-block="artwork">
+        <div class="hero-art-frame" id="hero-art-frame">
+        <div class="art-caption"><span id="art-caption-text">Make room for the good stuff</span> <span aria-hidden="true">↘</span></div>
+        <img class="art" id="art" alt="" hidden>
+        <div class="art-placeholder" id="art-placeholder" aria-hidden="true">
+          <span id="art-kicker">SMILE</span>
+          <strong id="art-title">BIG</strong>
+          <span id="art-subline">IT'S YOUR DAY</span>
+        </div>
+        </div>
+      </section>
 
-    <section class="brand-panels">
-      <div class="brand-panel">
+      <section class="brand-panels">
+      <div class="brand-panel" data-block="how">
+        <span class="panel-number">01</span>
         <h2>How the day runs</h2>
         <p>Each student gets a card with a code on it. The photographer shoots the card, then shoots the student. That is how every photo finds its way to the right family.</p>
       </div>
-      <div class="brand-panel">
+      <div class="brand-panel" data-block="card">
+        <span class="panel-number">02</span>
         <h2>Bring your card</h2>
         <p>Your homeroom teacher hands out the cards that morning. Lost it? Tell the staff at the table and they will print a new one.</p>
       </div>
-      <div class="brand-panel">
+      <div class="brand-panel" data-block="photos">
+        <span class="panel-number">03</span>
         <h2>Getting the photos</h2>
         <p>A private link goes to the email address the school has on file for your family. Only that link opens your photos, and it expires after a few weeks.</p>
       </div>
-    </section>
+      </section>
+    </main>
 
-    <footer class="brand-foot">
+    <footer class="brand-foot home-block" data-block="footer">
       <span id="credit"></span>
       <span id="footname"></span>
     </footer>
@@ -53,15 +75,43 @@ import { api, applyBranding, esc } from '/assets/common.js';
 // ?draft=1 is used by the design studio preview; it needs a signed-in designer.
 const wantDraft = new URLSearchParams(location.search).get('draft') === '1';
 const b = await api(wantDraft ? '/api/branding/draft' : '/api/branding').catch(() => api('/api/branding'));
-applyBranding(b);
+applyBranding(b, document.documentElement, 'home');
 
 document.title = `${b.eventName} — ${b.schoolName}`;
 document.getElementById('school').textContent = b.schoolName;
 document.getElementById('event').textContent = `${b.eventName} ${b.year}`;
-document.getElementById('headline').textContent = `${b.eventName} ${b.year}`;
-document.getElementById('tagline').textContent = b.tagline || b.welcome;
+document.getElementById('headline').textContent = b.hero?.headline || `${b.eventName} ${b.year}`;
+document.getElementById('tagline').textContent = b.hero?.tagline || b.tagline || b.welcome;
 document.getElementById('footname').textContent = `${b.schoolName} · ${b.eventName} ${b.year}`;
 document.getElementById('credit').textContent = b.credit ? `Design: ${b.credit}` : '';
+document.getElementById('hero-copy').style.transform = `translate(${b.hero?.x || 0}%, ${b.hero?.y || 0}%)`;
+document.querySelector('[data-block="artwork"]').style.transform = `translate(${b.heroArt?.x || 0}%, ${b.heroArt?.y || 0}%)`;
+document.getElementById('art-caption-text').textContent = b.heroArt?.caption || 'Make room for the good stuff';
+document.getElementById('art-kicker').textContent = b.heroArt?.kicker || 'SMILE';
+document.getElementById('art-title').textContent = b.heroArt?.title || 'BIG';
+document.getElementById('art-subline').textContent = b.heroArt?.subline || "IT'S YOUR DAY";
+
+function applyLayout(order) {
+  const layout = document.getElementById('home-layout');
+  const panelGroup = layout.querySelector('.brand-panels');
+  if (panelGroup) panelGroup.replaceWith(...panelGroup.children);
+  const footer = document.querySelector('[data-block="footer"]');
+  if (footer && footer.parentElement !== layout) layout.append(footer);
+  const blocks = new Map([...layout.querySelectorAll(':scope > [data-block]')].map((block) => [block.dataset.block, block]));
+  (order || ['intro', 'artwork', 'how']).forEach((id) => {
+    const block = blocks.get(id);
+    if (block) layout.append(block);
+  });
+}
+applyLayout(b.layouts?.home);
+
+const blockColors = { primary: 'var(--b-primary)', accent: 'var(--b-accent)', ink: 'var(--b-ink)', paper: 'var(--b-paper)' };
+document.getElementById('custom-blocks').innerHTML = (b.blocks || []).map((block) => {
+  const style = `left:${block.x}%;top:${block.y}%;width:${block.width}%;color:${blockColors[block.color] || blockColors.ink};font-size:${block.size}rem`;
+  return block.type === 'image'
+    ? `<img class="custom-block custom-block-image" src="/brand/${encodeURIComponent(block.src)}" alt="" style="${style}">`
+    : `<div class="custom-block custom-block-text" style="${style}">${esc(block.text)}</div>`;
+}).join('');
 
 if (b.logo) {
   const el = document.getElementById('logo');
@@ -73,6 +123,7 @@ if (b.artwork) {
   const el = document.getElementById('art');
   el.src = `/brand/${encodeURIComponent(b.artwork)}`;
   el.hidden = false;
+  document.getElementById('art-placeholder').hidden = true;
 }
 </script>
 </body>

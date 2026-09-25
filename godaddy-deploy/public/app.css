@@ -139,13 +139,6 @@ input[type='text'], input[type='email'], input[type='password'], input[type='num
 textarea { min-height: 110px; resize: vertical; line-height: 1.5; }
 label { display: block; font-size: 0.83rem; color: var(--ink-2); margin-bottom: 4px; font-weight: 500; }
 .field { margin-bottom: 12px; }
-.password-wrap { display: flex; align-items: center; gap: 8px; }
-.password-wrap input { flex: 1; }
-.toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--ink-2); white-space: nowrap; }
-.toggle input { width: auto; margin: 0; }
-.toggle-row { justify-content: flex-end; margin-top: -2px; }
-.card.nested { margin-top: 14px; background: #fafcfb; }
-.reset-actions { margin-top: 8px; }
 .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 

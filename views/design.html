@@ -11,7 +11,9 @@
   .panel { background: var(--card); border-right: 1px solid var(--line); padding: 20px 20px 60px; overflow-y: auto; height: 100vh; }
   .stage { background: #e9ede9; display: flex; flex-direction: column; min-width: 0; }
   .stage .bar { display: flex; gap: 8px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--card); flex-wrap: wrap; }
-  .stage iframe { flex: 1; width: 100%; border: 0; background: #fff; }
+  .stage iframe { flex: 1; width: 100%; max-width: none; margin: 0 auto; border: 0; background: #fff; transition: max-width .2s ease, box-shadow .2s ease; }
+  .stage iframe.canvas-tablet { max-width: 768px; box-shadow: 0 0 0 1px var(--line), 0 14px 35px rgba(30, 45, 38, .12); }
+  .stage iframe.canvas-mobile { max-width: 390px; box-shadow: 0 0 0 10px #202825, 0 18px 42px rgba(30, 45, 38, .2); margin-top: 20px; margin-bottom: 20px; }
   .swatches { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
   .swatch { display: flex; align-items: center; gap: 9px; border: 1px solid var(--line); border-radius: var(--radius); padding: 7px 9px; }
   .swatch input[type='color'] { width: 34px; height: 30px; border: 0; background: none; padding: 0; cursor: pointer; }
@@ -27,6 +29,26 @@
   .seg button[aria-pressed='true'] { background: var(--primary); border-color: var(--primary); color: #fff; }
   .thumbrow { display: flex; gap: 10px; align-items: center; }
   .thumbrow img { max-height: 54px; max-width: 120px; border: 1px solid var(--line); border-radius: 4px; background: #fff; }
+  .color-value { width: 78px; border: 0; background: transparent; color: var(--ink-2); font: 0.78rem ui-monospace, monospace; text-transform: uppercase; padding: 0; }
+  .stage-tools { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .preview-state { color: var(--ink-2); font-size: 0.78rem; }
+  .canvas-label { color: var(--ink-2); font-size: 0.75rem; text-transform: uppercase; letter-spacing: .08em; }
+  .layout-list { display: grid; gap: 7px; margin-top: 10px; }
+  .layout-item { display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; padding: 9px 10px; cursor: grab; }
+  .layout-item:active { cursor: grabbing; }
+  .layout-item.dragging { opacity: .45; border-style: dashed; }
+  .layout-item .handle { color: var(--ink-2); font-size: 1.05rem; }
+  .layout-item small { display: block; color: var(--ink-2); font-size: .74rem; }
+  .layout-reset { margin-top: 9px; }
+  .block-list { display: grid; gap: 10px; margin-top: 10px; }
+  .design-block { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; background: #fff; }
+  .design-block header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+  .design-block header b { font-size: .84rem; }
+  .block-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; }
+  .block-grid label { font-size: .72rem; color: var(--ink-2); }
+  .block-grid input, .block-grid select, .design-block textarea { width: 100%; }
+  .design-block textarea { min-height: 54px; resize: vertical; }
+  .block-add { display: flex; gap: 8px; margin-top: 10px; }
   @media (max-width: 900px) { .studio { grid-template-columns: 1fr; } .panel, .stage iframe { height: auto; } .stage iframe { min-height: 70vh; } }
 </style>
 </head>
@@ -50,14 +72,70 @@
     </div>
 
     <div class="card" style="padding:14px">
+      <h3>Hero block</h3>
+      <div class="field"><label for="heroHeadline">Hero headline</label><input type="text" id="heroHeadline" placeholder="Uses the event name and year"></div>
+      <div class="field"><label for="heroTagline">Hero text</label><textarea id="heroTagline" placeholder="Uses the tagline above when blank"></textarea></div>
+      <div class="block-grid">
+        <label>Horizontal %<input type="number" id="heroX" min="-40" max="40" step="1"></label>
+        <label>Vertical %<input type="number" id="heroY" min="-40" max="40" step="1"></label>
+      </div>
+    </div>
+
+    <div class="card" style="padding:14px">
+      <h3>Hero artwork block</h3>
+      <div class="field"><label for="artCaption">Small caption</label><input type="text" id="artCaption"></div>
+      <div class="field"><label for="artKicker">Top text</label><input type="text" id="artKicker"></div>
+      <div class="field"><label for="artTitle">Large text</label><input type="text" id="artTitle"></div>
+      <div class="field"><label for="artSubline">Bottom text</label><input type="text" id="artSubline"></div>
+      <div class="block-grid">
+        <label>Horizontal %<input type="number" id="artX" min="-40" max="40" step="1"></label>
+        <label>Vertical %<input type="number" id="artY" min="-40" max="40" step="1"></label>
+      </div>
+    </div>
+
+    <div class="card" style="padding:14px">
       <h3>Colour</h3>
       <div class="kits" id="kits" style="margin:10px 0 14px"></div>
       <div class="swatches">
-        <label class="swatch"><input type="color" id="cPrimary"><span>Main</span></label>
-        <label class="swatch"><input type="color" id="cAccent"><span>Accent</span></label>
-        <label class="swatch"><input type="color" id="cInk"><span>Text</span></label>
-        <label class="swatch"><input type="color" id="cPaper"><span>Background</span></label>
+        <label class="swatch"><input type="color" id="cPrimary"><span>Main</span><input class="color-value" id="vPrimary" maxlength="7" aria-label="Main colour hex value"></label>
+        <label class="swatch"><input type="color" id="cAccent"><span>Accent</span><input class="color-value" id="vAccent" maxlength="7" aria-label="Accent colour hex value"></label>
+        <label class="swatch"><input type="color" id="cInk"><span>Text</span><input class="color-value" id="vInk" maxlength="7" aria-label="Text colour hex value"></label>
+        <label class="swatch"><input type="color" id="cPaper"><span>Background</span><input class="color-value" id="vPaper" maxlength="7" aria-label="Background colour hex value"></label>
       </div>
+    </div>
+
+    <div class="card" style="padding:14px">
+      <h3>School page</h3>
+      <p class="hint">Tune the public welcome page without changing the family gallery.</p>
+      <div class="swatches">
+        <label class="swatch"><input type="color" id="hPrimary"><span>Main</span><input class="color-value" id="hvPrimary" maxlength="7" aria-label="School page main colour"></label>
+        <label class="swatch"><input type="color" id="hAccent"><span>Accent</span><input class="color-value" id="hvAccent" maxlength="7" aria-label="School page accent colour"></label>
+        <label class="swatch"><input type="color" id="hInk"><span>Text</span><input class="color-value" id="hvInk" maxlength="7" aria-label="School page text colour"></label>
+        <label class="swatch"><input type="color" id="hPaper"><span>Background</span><input class="color-value" id="hvPaper" maxlength="7" aria-label="School page background colour"></label>
+      </div>
+      <div class="field"><label>Background pattern</label><div class="seg" id="homeBackdrop">
+        <button data-v="paper">Plain</button><button data-v="tint">Wash</button><button data-v="grid">Grid</button><button data-v="halftone">Dots</button>
+      </div></div>
+      <div class="field" style="margin-bottom:0"><label>Hero image treatment</label><div class="seg" id="heroTreatment">
+        <button data-v="solid">Colour</button><button data-v="wash">Colour wash</button><button data-v="duotone">Duotone</button>
+      </div></div>
+    </div>
+
+    <div class="card" style="padding:14px">
+      <h3>Family gallery</h3>
+      <p class="hint">Give the private photo view its own mood and frame style.</p>
+      <div class="swatches">
+        <label class="swatch"><input type="color" id="gPrimary"><span>Main</span><input class="color-value" id="gvPrimary" maxlength="7" aria-label="Gallery main colour"></label>
+        <label class="swatch"><input type="color" id="gAccent"><span>Accent</span><input class="color-value" id="gvAccent" maxlength="7" aria-label="Gallery accent colour"></label>
+        <label class="swatch"><input type="color" id="gInk"><span>Text</span><input class="color-value" id="gvInk" maxlength="7" aria-label="Gallery text colour"></label>
+        <label class="swatch"><input type="color" id="gPaper"><span>Background</span><input class="color-value" id="gvPaper" maxlength="7" aria-label="Gallery background colour"></label>
+      </div>
+      <div class="field"><label>Background pattern</label><div class="seg" id="galleryBackdrop">
+        <button data-v="paper">Plain</button><button data-v="tint">Wash</button><button data-v="grid">Grid</button><button data-v="halftone">Dots</button>
+      </div></div>
+      <div class="field" style="margin-bottom:0"><label>Photo frames</label><div class="seg" id="cardStyle">
+        <button data-v="clean">Clean</button><button data-v="outline">Outline</button><button data-v="shadow">Shadow</button>
+      </div></div>
     </div>
 
     <div class="card" style="padding:14px">
@@ -94,6 +172,35 @@
           <button class="ghost small" id="artClear">Remove</button>
         </div>
       </div>
+      <div class="field" style="margin-bottom:0">
+        <label>Artwork for family galleries</label>
+        <div class="thumbrow">
+          <img id="galleryArtImg" alt="" hidden>
+          <input type="file" id="galleryArtFile" accept="image/*" style="max-width:190px">
+          <button class="ghost small" id="galleryArtClear">Remove</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="padding:14px">
+      <h3>Arrange the pages</h3>
+      <p class="hint">Drag blocks to change their order on each page. Your changes are part of the draft.</p>
+      <h4>School page</h4>
+      <div class="layout-list" id="homeLayout" aria-label="School page block order"></div>
+      <button class="ghost small layout-reset" id="resetHomeLayout">Reset school page order</button>
+      <h4>Family gallery</h4>
+      <div class="layout-list" id="galleryLayout" aria-label="Family gallery block order"></div>
+      <button class="ghost small layout-reset" id="resetGalleryLayout">Reset gallery order</button>
+    </div>
+
+    <div class="card" style="padding:14px">
+      <h3>Background blocks</h3>
+      <p class="hint">Add text or images to the school-page hero, then place them with percentages.</p>
+      <div class="block-list" id="blocks"></div>
+      <div class="block-add">
+        <button class="small" id="addTextBlock">Add text</button>
+        <label class="small button-like">Add image<input type="file" id="blockImageFile" accept="image/*" hidden></label>
+      </div>
     </div>
 
     <div class="row">
@@ -111,6 +218,15 @@
         <button data-src="/g/preview">A family's gallery</button>
       </div>
       <div style="flex:1"></div>
+      <div class="stage-tools">
+        <span class="canvas-label">Canvas</span>
+        <div class="seg" id="viewport" aria-label="Preview size">
+          <button data-viewport="desktop" aria-pressed="true">Desktop</button>
+          <button data-viewport="tablet">Tablet</button>
+          <button data-viewport="mobile">Phone</button>
+        </div>
+        <span class="preview-state" id="previewState">Preview ready</span>
+      </div>
       <button class="small" id="reload">Refresh preview</button>
       <button class="small primary" id="publish" hidden>Publish this design</button>
     </div>
