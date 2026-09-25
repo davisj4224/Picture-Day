@@ -15,9 +15,9 @@ const bcrypt = require('bcryptjs');
 const QRCode = require('qrcode');
 const { parse: parseCsv } = require('csv-parse/sync');
 
-const { db, config, branding, setSetting, newQrCode, newGalleryToken, DEFAULT_BRANDING } = require('./lib/db');
-const cards = require('./lib/cards');
-const mail = require('./lib/mail');
+const { db, config, branding, setSetting, newQrCode, newGalleryToken, DEFAULT_BRANDING } = require('./lib/db.js');
+const cards = require('./lib/cards.js');
+const mail = require('./lib/mail.js');
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
