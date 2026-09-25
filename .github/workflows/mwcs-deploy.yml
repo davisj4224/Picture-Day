@@ -1,0 +1,24 @@
+name: mwcs-deploy
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Deploy to MWCS
+    runs-on: ubuntu-20.04
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v2
+
+      - name: Run deploy
+        uses: godaddy-wordpress/mwcs-deploy-action@v1
+        with:
+          MWCS_DEPLOY_DEST: "/httpdocs"
+          MWCS_INTEGRATION_SECRET: "${{ secrets.MWCS_INTEGRATION_SECRET }}"
+          MWCS_INTEGRATION_ID: "${{ secrets.MWCS_INTEGRATION_ID }}"
+          MWCS_APP_ID: "${{ secrets.MWCS_APP_ID }}"
+          MWCS_WORKING_DIR: "${{ github.workspace }}/godaddy-deploy"

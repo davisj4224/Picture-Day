@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Design studio — Picture Day</title>
+<meta name="robots" content="noindex">
+<link rel="stylesheet" href="/assets/app.css">
+<style>
+  .studio { display: grid; grid-template-columns: 380px 1fr; min-height: 100vh; }
+  .panel { background: var(--card); border-right: 1px solid var(--line); padding: 20px 20px 60px; overflow-y: auto; height: 100vh; }
+  .stage { background: #e9ede9; display: flex; flex-direction: column; min-width: 0; }
+  .stage .bar { display: flex; gap: 8px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--card); flex-wrap: wrap; }
+  .stage iframe { flex: 1; width: 100%; border: 0; background: #fff; }
+  .swatches { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .swatch { display: flex; align-items: center; gap: 9px; border: 1px solid var(--line); border-radius: var(--radius); padding: 7px 9px; }
+  .swatch input[type='color'] { width: 34px; height: 30px; border: 0; background: none; padding: 0; cursor: pointer; }
+  .swatch span { font-size: 0.82rem; color: var(--ink-2); }
+  .kits { display: grid; gap: 8px; }
+  .kit { display: flex; align-items: center; gap: 10px; cursor: pointer; border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; background: #fff; text-align: left; }
+  .kit:hover { border-color: var(--primary); }
+  .kit .chips { display: flex; gap: 4px; }
+  .kit .chips i { width: 16px; height: 16px; border-radius: 3px; display: block; }
+  .kit b { font-weight: 500; font-size: 0.88rem; }
+  .seg { display: flex; flex-wrap: wrap; gap: 6px; }
+  .seg button { font-size: 0.83rem; padding: 5px 10px; }
+  .seg button[aria-pressed='true'] { background: var(--primary); border-color: var(--primary); color: #fff; }
+  .thumbrow { display: flex; gap: 10px; align-items: center; }
+  .thumbrow img { max-height: 54px; max-width: 120px; border: 1px solid var(--line); border-radius: 4px; background: #fff; }
+  @media (max-width: 900px) { .studio { grid-template-columns: 1fr; } .panel, .stage iframe { height: auto; } .stage iframe { min-height: 70vh; } }
+</style>
+</head>
+<body>
+<div class="studio">
+  <div class="panel">
+    <div class="mark" style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+      <span class="lens" style="box-shadow:inset 0 0 0 3px #fff, inset 0 0 0 6px #b9c6cb"></span>
+      <b>Design studio</b>
+    </div>
+    <p class="hint">Everything you change here is a draft. Nothing families see changes until a staff member publishes it.</p>
+
+    <div class="card" style="padding:14px">
+      <h3>Words</h3>
+      <div class="field"><label for="school">School name</label><input type="text" id="school"></div>
+      <div class="field"><label for="event">What you call the day</label><input type="text" id="event" placeholder="Picture Day"></div>
+      <div class="field"><label for="year">Year</label><input type="text" id="year"></div>
+      <div class="field"><label for="tagline">Headline line on the school page</label><input type="text" id="tagline" placeholder="Smile like you mean it."></div>
+      <div class="field"><label for="welcome">Note at the top of a family's gallery</label><textarea id="welcome" style="min-height:90px"></textarea></div>
+      <div class="field"><label for="credit">Design credit</label><input type="text" id="credit" placeholder="Digital Media II, 4th period"></div>
+    </div>
+
+    <div class="card" style="padding:14px">
+      <h3>Colour</h3>
+      <div class="kits" id="kits" style="margin:10px 0 14px"></div>
+      <div class="swatches">
+        <label class="swatch"><input type="color" id="cPrimary"><span>Main</span></label>
+        <label class="swatch"><input type="color" id="cAccent"><span>Accent</span></label>
+        <label class="swatch"><input type="color" id="cInk"><span>Text</span></label>
+        <label class="swatch"><input type="color" id="cPaper"><span>Background</span></label>
+      </div>
+    </div>
+
+    <div class="card" style="padding:14px">
+      <h3>Type</h3>
+      <div class="field"><label for="fHead">Headlines</label><select id="fHead"></select></div>
+      <div class="field"><label for="fBody">Body text</label><select id="fBody"></select></div>
+    </div>
+
+    <div class="card" style="padding:14px">
+      <h3>Shape and pattern</h3>
+      <div class="field"><label>Corners</label><div class="seg" id="corners">
+        <button data-v="sharp">Sharp</button><button data-v="soft">Soft</button><button data-v="round">Round</button>
+      </div></div>
+      <div class="field" style="margin-bottom:0"><label>Background</label><div class="seg" id="backdrop">
+        <button data-v="paper">Plain</button><button data-v="tint">Wash</button><button data-v="grid">Grid</button><button data-v="halftone">Dots</button>
+      </div></div>
+    </div>
+
+    <div class="card" style="padding:14px">
+      <h3>Pictures</h3>
+      <div class="field">
+        <label>Logo</label>
+        <div class="thumbrow">
+          <img id="logoImg" alt="" hidden>
+          <input type="file" id="logoFile" accept="image/*" style="max-width:190px">
+          <button class="ghost small" id="logoClear">Remove</button>
+        </div>
+      </div>
+      <div class="field" style="margin-bottom:0">
+        <label>Artwork for the school page</label>
+        <div class="thumbrow">
+          <img id="artImg" alt="" hidden>
+          <input type="file" id="artFile" accept="image/*" style="max-width:190px">
+          <button class="ghost small" id="artClear">Remove</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="row">
+      <button class="primary" id="save">Save draft</button>
+      <button id="revert">Undo back to published</button>
+    </div>
+    <p class="hint" id="saveState" style="margin-top:10px"></p>
+    <p class="hint"><a href="/login">Switch account</a> · <button class="ghost small" id="signout">Sign out</button></p>
+  </div>
+
+  <div class="stage">
+    <div class="bar">
+      <div class="seg" id="target">
+        <button data-src="/?draft=1" aria-pressed="true">School page</button>
+        <button data-src="/g/preview">A family's gallery</button>
+      </div>
+      <div style="flex:1"></div>
+      <button class="small" id="reload">Refresh preview</button>
+      <button class="small primary" id="publish" hidden>Publish this design</button>
+    </div>
+    <iframe id="preview" title="Design preview" src="/?draft=1"></iframe>
+  </div>
+</div>
+
+<script type="module" src="/assets/design.js"></script>
+</body>
+</html>

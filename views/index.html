@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Picture Day</title>
+<meta name="robots" content="noindex">
+<link rel="stylesheet" href="/assets/brand.css">
+</head>
+<body class="brand">
+  <div class="brand-wrap">
+    <header class="brand-head">
+      <img class="logo" id="logo" alt="" hidden>
+      <div class="names">
+        <div class="school" id="school">Picture Day</div>
+        <div class="event" id="event"></div>
+      </div>
+      <div class="spacer"></div>
+      <a href="/login">Staff sign-in</a>
+    </header>
+
+    <section class="brand-hero">
+      <div class="rule"></div>
+      <h1 id="headline">Picture Day</h1>
+      <p class="lede" id="tagline"></p>
+      <img class="art" id="art" alt="" hidden>
+    </section>
+
+    <section class="brand-panels">
+      <div class="brand-panel">
+        <h2>How the day runs</h2>
+        <p>Each student gets a card with a code on it. The photographer shoots the card, then shoots the student. That is how every photo finds its way to the right family.</p>
+      </div>
+      <div class="brand-panel">
+        <h2>Bring your card</h2>
+        <p>Your homeroom teacher hands out the cards that morning. Lost it? Tell the staff at the table and they will print a new one.</p>
+      </div>
+      <div class="brand-panel">
+        <h2>Getting the photos</h2>
+        <p>A private link goes to the email address the school has on file for your family. Only that link opens your photos, and it expires after a few weeks.</p>
+      </div>
+    </section>
+
+    <footer class="brand-foot">
+      <span id="credit"></span>
+      <span id="footname"></span>
+    </footer>
+  </div>
+
+<script type="module">
+import { api, applyBranding, esc } from '/assets/common.js';
+
+// ?draft=1 is used by the design studio preview; it needs a signed-in designer.
+const wantDraft = new URLSearchParams(location.search).get('draft') === '1';
+const b = await api(wantDraft ? '/api/branding/draft' : '/api/branding').catch(() => api('/api/branding'));
+applyBranding(b);
+
+document.title = `${b.eventName} — ${b.schoolName}`;
+document.getElementById('school').textContent = b.schoolName;
+document.getElementById('event').textContent = `${b.eventName} ${b.year}`;
+document.getElementById('headline').textContent = `${b.eventName} ${b.year}`;
+document.getElementById('tagline').textContent = b.tagline || b.welcome;
+document.getElementById('footname').textContent = `${b.schoolName} · ${b.eventName} ${b.year}`;
+document.getElementById('credit').textContent = b.credit ? `Design: ${b.credit}` : '';
+
+if (b.logo) {
+  const el = document.getElementById('logo');
+  el.src = `/brand/${encodeURIComponent(b.logo)}`;
+  el.alt = `${b.schoolName} logo`;
+  el.hidden = false;
+}
+if (b.artwork) {
+  const el = document.getElementById('art');
+  el.src = `/brand/${encodeURIComponent(b.artwork)}`;
+  el.hidden = false;
+}
+</script>
+</body>
+</html>
