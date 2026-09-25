@@ -3,9 +3,9 @@
   "version": "2.0.0",
   "private": true,
   "description": "QR-driven picture day system: roster, printable QR cards, automatic photo sorting, private galleries, and a student design studio.",
-  "main": "PictureDayFinal/server.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node PictureDayFinal/server.js",
+    "start": "node server.js",
     "dev": "node --watch PictureDayFinal/server.js",
     "reset-password": "node scripts/reset-password.js"
   },
