@@ -229,7 +229,7 @@
       <div class="head">
         <div>
           <h1>Email</h1>
-          <p>Send the private links, or export them and send from the school's own mail system.</p>
+          <p>Send the private links, or export the full roster and parent emails. Gallery links appear after publishing.</p>
         </div>
         <a class="btn small" href="/api/email/export.csv">Export links as CSV</a>
       </div>
@@ -289,6 +289,26 @@
           <div class="field"><label for="pwNew">New password</label><input type="password" id="pwNew" autocomplete="new-password"></div>
         </div>
         <button id="savePassword">Change password</button>
+      </div>
+
+      <div class="card">
+        <h2>Staff accounts</h2>
+        <p class="hint" id="staffCount" aria-live="polite">Loading staff accounts…</p>
+        <div style="overflow-x:auto">
+          <table id="staffTable">
+            <thead><tr><th>Username</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <form id="staffForm" style="margin-top:16px">
+          <h3>Add a staff member</h3>
+          <p class="hint">Staff accounts can access the roster, photos, and galleries. Set a temporary password and share it securely; the new staff member can change it after signing in.</p>
+          <div class="grid-2">
+            <div class="field"><label for="staffUsername">Username</label><input type="text" id="staffUsername" minlength="3" maxlength="32" pattern="[A-Za-z0-9._-]+" autocomplete="off" required></div>
+            <div class="field"><label for="staffPassword">Temporary password (at least 10 characters)</label><input type="password" id="staffPassword" minlength="10" autocomplete="new-password" required></div>
+          </div>
+          <button class="primary" id="addStaff" type="submit">Add staff account</button>
+        </form>
       </div>
 
       <div class="card">

@@ -26,7 +26,7 @@ two never touch.
 You need [Node.js](https://nodejs.org) 18.17 or newer. Check with `node -v`.
 
 ```bash
-cd school-picture-day
+cd godaddy-deploy
 npm install
 cp .env.example .env
 node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
@@ -43,24 +43,30 @@ account and, if you want one, the student `design` password. There is no way
 back into this screen afterwards — if you forget the password, run
 `npm run reset-password -- yourname anewpassword`.
 
-## Deploying to GoDaddy Web Hosting
+## Deploying This Copy to GoDaddy
 
 This application requires GoDaddy hosting with **Setup Node.js App** or
 **Application Manager** in cPanel. GoDaddy domain-only and static Website
 Builder plans cannot run it.
 
-1. In cPanel, create a Node.js application using Node 18 or newer.
-2. Set the application root to `PictureDayFinal` and the startup file to
-      `server.js`.
-3. Upload this folder's contents into the application root, then run
-      `npm install --production` there.
-4. Add `NODE_ENV=production`, `SECURE_COOKIES=true`, and a long random
-      `SESSION_SECRET` in the application's environment variables. Do not upload
-      `.env` to source control.
-5. Start or restart the application and enable HTTPS for the domain.
-6. Complete the one-time setup at `/setup`.
-7. In Admin → Settings, set **Address families will use** to the public HTTPS
-      address, such as `https://photos.example.org`.
+This directory is the deployable copy tracked in the GitHub repository. In
+cPanel, check out the repository with Git Version Control and set the Node.js
+application root to the checkout's `godaddy-deploy` directory. Use Node 18 or
+newer, set the startup file to `server.js`, install production dependencies in
+that directory, then restart the application after pulling a new commit.
+
+Set `NODE_ENV=production`, `SECURE_COOKIES=true`, and a long random
+`SESSION_SECRET` in the application's environment variables. Do not commit or
+upload `.env`.
+
+This copy intentionally excludes the local database and student photos. When
+updating an existing GoDaddy install, preserve its `data/`, `uploads/full/`, and
+`uploads/thumb/` directories. Do not complete first-time setup on an install
+that already has staff accounts. The branded files in `uploads/brand/` are
+included with this copy.
+
+In Admin → Settings, set **Address families will use** to
+`https://calcharterpicts.org` so gallery links point to the live site.
 
 The application must be able to write to `data/` and `uploads/`. Back up both
 locations because they contain the database and uploaded photographs.

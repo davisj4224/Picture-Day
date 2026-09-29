@@ -29,6 +29,7 @@ function show(view) {
   if (view === 'email') loadPending();
   if (view === 'upload') loadBatches();
   if (view === 'floor') loadStats();
+  if (view === 'settings') loadStaffAccounts();
 }
 $('#nav').addEventListener('click', (e) => {
   const b = e.target.closest('button[data-view]');
@@ -597,6 +598,42 @@ $('#savePassword').addEventListener('click', async () => {
     await api('/api/password', { method: 'POST', body: { current: $('#pwOld').value, next: $('#pwNew').value } });
     $('#pwOld').value = $('#pwNew').value = '';
     toast('Password changed.', 'good');
+  } catch (e) { toast(e.message, 'bad'); }
+});
+
+async function loadStaffAccounts() {
+  const users = await api('/api/staff-users');
+  $('#staffCount').textContent = `${users.length} of 5 staff accounts in use`;
+  $('#staffTable tbody').innerHTML = users
+    .map((user) => `<tr><td>${esc(user.username)}${user.id === me.user.id ? ' (you)' : ''}</td><td class="num">${user.id === me.user.id ? '' : `<button class="ghost small danger" data-remove-staff="${user.id}">Remove</button>`}</td></tr>`)
+    .join('');
+  $('#addStaff').disabled = users.length >= 5;
+}
+
+$('#staffForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  try {
+    await api('/api/staff-users', {
+      method: 'POST',
+      body: { username: $('#staffUsername').value, password: $('#staffPassword').value }
+    });
+    $('#staffUsername').value = '';
+    $('#staffPassword').value = '';
+    toast('Staff account added.', 'good');
+    await loadStaffAccounts();
+  } catch (e) { toast(e.message, 'bad'); }
+});
+
+$('#staffTable').addEventListener('click', async (event) => {
+  const button = event.target.closest('button[data-remove-staff]');
+  if (!button) return;
+  const row = button.closest('tr');
+  const username = row.cells[0].textContent.replace(' (you)', '');
+  if (!confirm(`Remove the staff account for ${username}? They will no longer be able to sign in.`)) return;
+  try {
+    await api(`/api/staff-users/${button.dataset.removeStaff}`, { method: 'DELETE' });
+    toast('Staff account removed.', 'good');
+    await loadStaffAccounts();
   } catch (e) { toast(e.message, 'bad'); }
 });
 

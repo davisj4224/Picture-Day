@@ -122,7 +122,10 @@ const ok = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch
 
 const page = (name) => (req, res) => res.sendFile(path.join(VIEWS, name));
 
-app.get('/', (req, res, next) => (userCount() === 0 ? res.redirect('/setup') : next()), page('index.html'));
+app.get('/', (req, res, next) => {
+  if (userCount() === 0) return res.sendFile(path.join(VIEWS, 'setup.html'));
+  return page('index.html')(req, res, next);
+});
 app.get('/setup', (req, res) => (userCount() > 0 ? res.redirect('/login') : res.sendFile(path.join(VIEWS, 'setup.html'))));
 app.get('/login', (req, res) => (userCount() === 0 ? res.redirect('/setup') : res.sendFile(path.join(VIEWS, 'login.html'))));
 app.get('/admin', requireStaff, page('admin.html'));
@@ -193,6 +196,49 @@ app.post(
       return res.status(401).json({ error: 'Current password is not right.' });
     if (!nextPw || nextPw.length < 10) return res.status(400).json({ error: 'New password must be at least 10 characters.' });
     db.prepare('UPDATE users SET password = ? WHERE id = ?').run(bcrypt.hashSync(nextPw, 12), row.id);
+    res.json({ ok: true });
+  })
+);
+
+app.get('/api/staff-users', requireStaff, (req, res) => {
+  const users = db.prepare("SELECT id, username FROM users WHERE role = 'staff' ORDER BY username").all();
+  res.json(users);
+});
+
+app.post(
+  '/api/staff-users',
+  requireStaff,
+  ok((req, res) => {
+    const username = String(req.body?.username || '').trim().toLowerCase();
+    const password = String(req.body?.password || '');
+    if (!/^[a-z0-9._-]{3,32}$/.test(username)) {
+      return res.status(400).json({ error: 'Username must be 3–32 characters: letters, numbers, dots, hyphens, or underscores.' });
+    }
+    if (password.length < 10) return res.status(400).json({ error: 'Password must be at least 10 characters.' });
+    if (db.prepare("SELECT COUNT(*) n FROM users WHERE role = 'staff'").get().n >= 5) {
+      return res.status(400).json({ error: 'The limit of 5 staff accounts has been reached.' });
+    }
+    if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) {
+      return res.status(409).json({ error: 'That username is already in use.' });
+    }
+    const result = db
+      .prepare('INSERT INTO users (username, password, role, created_at) VALUES (?, ?, ?, ?)')
+      .run(username, bcrypt.hashSync(password, 12), 'staff', Date.now());
+    res.status(201).json({ id: result.lastInsertRowid, username });
+  })
+);
+
+app.delete(
+  '/api/staff-users/:id',
+  requireStaff,
+  ok((req, res) => {
+    const user = db.prepare("SELECT id FROM users WHERE id = ? AND role = 'staff'").get(req.params.id);
+    if (!user) return res.status(404).json({ error: 'Staff account not found.' });
+    if (user.id === req.session.user.id) return res.status(400).json({ error: 'You cannot remove your own account.' });
+    if (db.prepare("SELECT COUNT(*) n FROM users WHERE role = 'staff'").get().n <= 1) {
+      return res.status(400).json({ error: 'At least one staff account must remain.' });
+    }
+    db.prepare('DELETE FROM users WHERE id = ?').run(user.id);
     res.json({ ok: true });
   })
 );
@@ -768,18 +814,25 @@ app.get('/api/email/pending', requireStaff, (req, res) => {
 });
 
 app.get('/api/email/export.csv', requireStaff, (req, res) => {
-  const rows = db.prepare('SELECT * FROM students WHERE published_at IS NOT NULL ORDER BY last_name').all();
-  const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const lines = [['Student', 'Grade', 'Teacher', 'Parent email', 'Gallery link', 'Expires'].map(esc).join(',')];
+  const rows = db.prepare('SELECT * FROM students ORDER BY last_name, first_name').all();
+  const base = (config().publicUrl || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
+  const esc = (v) => {
+    const value = String(v ?? '');
+    const safe = /^[\u0000-\u0020]*[=+\-@]/.test(value) ? `'${value}` : value;
+    return `"${safe.replace(/"/g, '""')}"`;
+  };
+  const lines = [['Student', 'Grade', 'Teacher', 'Parent email', 'Gallery link', 'Expires', 'Gallery status'].map(esc).join(',')];
   for (const s of rows) {
+    const published = Boolean(s.published_at && s.gallery_token);
     lines.push(
       [
         `${s.first_name} ${s.last_name}`,
         s.grade,
         s.teacher,
         s.parent_email,
-        galleryLink(s),
-        s.expires_at ? new Date(s.expires_at).toLocaleDateString() : ''
+        published ? `${base}/g/${s.gallery_token}` : '',
+        published && s.expires_at ? new Date(s.expires_at).toLocaleDateString() : '',
+        published ? 'Published' : 'Not published'
       ]
         .map(esc)
         .join(',')

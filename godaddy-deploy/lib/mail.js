@@ -6,14 +6,34 @@ let cached = null;
 
 function transport() {
   if (cached) return cached;
-  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE } = process.env;
+
+  const {
+    SMTP_HOST,
+    SMTP_PORT,
+    SMTP_USER,
+    SMTP_PASS,
+    SMTP_SECURE
+  } = process.env;
+
   if (!SMTP_HOST) return null;
-  cached = nodemailer.createTransport({
+
+  const options = {
     host: SMTP_HOST,
-    port: Number(SMTP_PORT || 587),
-    secure: String(SMTP_SECURE || 'false') === 'true',
-    auth: SMTP_USER ? { user: SMTP_USER, pass: SMTP_PASS } : undefined
-  });
+    port: Number(SMTP_PORT || 25),
+    secure: String(SMTP_SECURE || 'false') === 'true'
+  };
+
+  // Only add authentication when a username and password are provided.
+  // GoDaddy's relay-hosting.secureserver.net does not use SMTP authentication.
+  if (SMTP_USER && SMTP_PASS) {
+    options.auth = {
+      user: SMTP_USER,
+      pass: SMTP_PASS
+    };
+  }
+
+  cached = nodemailer.createTransport(options);
+
   return cached;
 }
 
@@ -24,7 +44,13 @@ function render(template, vars) {
 }
 
 function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }[c]));
 }
 
 function toHtml(text, link, palette) {
@@ -32,6 +58,7 @@ function toHtml(text, link, palette) {
     .split('\n\n')
     .map((p) => `<p style="margin:0 0 16px;line-height:1.55">${p.replace(/\n/g, '<br>')}</p>`)
     .join('');
+
   return `<div style="font-family:Helvetica,Arial,sans-serif;font-size:15px;color:#16202B;max-width:34em">
   ${body.replace(
     escapeHtml(link),
@@ -44,21 +71,47 @@ function toHtml(text, link, palette) {
 
 async function send({ to, subject, text, link, from, replyTo, palette }) {
   const t = transport();
-  if (!t) throw new Error('SMTP is not configured. Add SMTP_HOST and related values to .env, or use the CSV export instead.');
-  return t.sendMail({
-    from,
-    to,
-    replyTo: replyTo || undefined,
-    subject,
-    text,
-    html: toHtml(text, link, palette)
-  });
+
+  if (!t) {
+    throw new Error(
+      'SMTP is not configured. Add SMTP_HOST and related values to the hosting environment.'
+    );
+  }
+
+  try {
+    return await t.sendMail({
+      from,
+      to,
+      replyTo: replyTo || undefined,
+      subject,
+      text,
+      html: toHtml(text, link, palette)
+    });
+  } catch (err) {
+    console.error('SMTP SEND ERROR:', {
+      code: err.code,
+      command: err.command,
+      responseCode: err.responseCode,
+      response: err.response,
+      message: err.message
+    });
+    throw err;
+  }
 }
 
 async function verify() {
   const t = transport();
-  if (!t) throw new Error('SMTP is not configured.');
+
+  if (!t) {
+    throw new Error('SMTP is not configured.');
+  }
+
   return t.verify();
 }
 
-module.exports = { send, verify, render, configured: () => Boolean(process.env.SMTP_HOST) };
+module.exports = {
+  send,
+  verify,
+  render,
+  configured: () => Boolean(process.env.SMTP_HOST)
+};
