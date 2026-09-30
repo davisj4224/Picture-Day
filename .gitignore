@@ -7,3 +7,5 @@ uploads/brand/*
 !uploads/**/.gitkeep
 .DS_Store
 npm-debug.log*
+
+PictureDayFinal/
