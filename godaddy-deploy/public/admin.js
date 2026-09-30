@@ -6,7 +6,8 @@ const state = { students: [], stats: null, config: {}, branding: null, gallery: 
 /* ------------------------------------------------------------- startup */
 
 const me = await session();
-if (!me.user || me.user.role !== 'staff') location.href = '/login';
+if (!me.user || !['staff', 'admin'].includes(me.user.role)) location.href = '/login';
+if (me.user.role !== 'admin') $('#staffAccountsCard').hidden = true;
 $('#who').textContent = `Signed in as ${me.user.username}`;
 state.config = me.config || {};
 
@@ -29,7 +30,7 @@ function show(view) {
   if (view === 'email') loadPending();
   if (view === 'upload') loadBatches();
   if (view === 'floor') loadStats();
-  if (view === 'settings') loadStaffAccounts();
+  if (view === 'settings' && me.user.role === 'admin') loadStaffAccounts();
 }
 $('#nav').addEventListener('click', (e) => {
   const b = e.target.closest('button[data-view]');

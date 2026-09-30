@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS users (
   username    TEXT UNIQUE NOT NULL,
   password    TEXT NOT NULL,
   role        TEXT NOT NULL DEFAULT 'staff',
+  must_change_password INTEGER NOT NULL DEFAULT 0,
   created_at  INTEGER NOT NULL
 );
 
@@ -81,6 +82,17 @@ CREATE TABLE IF NOT EXISTS settings (
   value  TEXT NOT NULL
 );
 `);
+try {
+  db.exec("ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0");
+} catch (err) {
+  if (!String(err.message || err).includes("duplicate column name")) throw err;
+}
+
+// Ensure the original account becomes the administrator during the one-time role migration.
+if (!db.prepare("SELECT 1 FROM users WHERE role = 'admin' LIMIT 1").get()) {
+  db.prepare("UPDATE users SET role = 'admin' WHERE id = (SELECT id FROM users ORDER BY id LIMIT 1)").run();
+}
+
 
 /* ---------------------------------------------------------------- settings */
 

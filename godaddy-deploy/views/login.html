@@ -55,7 +55,7 @@ form.addEventListener('submit', async (e) => {
   try {
     const res = await api('/api/login', { method: 'POST', body: { username: form.username.value, password: form.password.value }});
     setCsrf(res.csrf);
-    location.href = res.user.role === 'staff' ? '/admin' : '/design';
+    location.href = res.user.mustChangePassword ? '/change-password' : (['staff', 'admin'].includes(res.user.role) ? '/admin' : '/design');
   } catch (e2) {
     err.textContent = e2.message;
     err.hidden = false;

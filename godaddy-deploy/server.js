@@ -200,12 +200,25 @@ const galleryLimiter = rateLimit({ windowMs: 60 * 1000, limit: 300, standardHead
 function userCount() {
   return db.prepare('SELECT COUNT(*) n FROM users').get().n;
 }
-const isStaff = (req) => req.session?.user?.role === 'staff';
+const isStaff = (req) => ['staff', 'admin'].includes(req.session?.user?.role);
+const isAdmin = (req) => req.session?.user?.role === 'admin';
 const isSignedIn = (req) => Boolean(req.session?.user);
 
 function requireStaff(req, res, next) {
-  if (isStaff(req)) return next();
-  if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Sign in as staff to do that.' });
+  if (!isStaff(req)) {
+    if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Sign in as staff to do that.' });
+    return res.redirect('/login');
+  }
+  if (req.session.user.mustChangePassword) {
+    if (req.path.startsWith('/api/')) return res.status(403).json({ error: 'Please change your temporary password first.' });
+    return res.redirect('/change-password');
+  }
+  return next();
+}
+
+function requireAdmin(req, res, next) {
+  if (isAdmin(req)) return next();
+  if (req.path.startsWith('/api/')) return res.status(403).json({ error: 'Administrator access is required.' });
   return res.redirect('/login');
 }
 function requireUser(req, res, next) {
@@ -227,6 +240,7 @@ app.get('/', (req, res, next) => {
 app.get('/setup', (req, res) => (userCount() > 0 ? res.redirect('/login') : res.sendFile(path.join(VIEWS, 'setup.html'))));
 app.get('/login', (req, res) => (userCount() === 0 ? res.redirect('/setup') : res.sendFile(path.join(VIEWS, 'login.html'))));
 app.get('/admin', requireStaff, page('admin.html'));
+app.get('/change-password', requireUser, page('change-password.html'));
 app.get('/design', requireUser, page('design.html'));
 app.get('/g/:token', page('gallery.html'));
 
@@ -244,7 +258,7 @@ app.post(
       return res.status(400).json({ error: 'Staff password must be at least 10 characters.' });
     const now = Date.now();
     const ins = db.prepare('INSERT INTO users (username, password, role, created_at) VALUES (?,?,?,?)');
-    ins.run(String(username).trim().toLowerCase(), bcrypt.hashSync(password, 12), 'staff', now);
+    ins.run(String(username).trim().toLowerCase(), bcrypt.hashSync(password, 12), 'admin', now);
     if (designPassword && designPassword.length >= 6)
       ins.run('design', bcrypt.hashSync(designPassword, 12), 'designer', now);
     if (schoolName) {
@@ -266,7 +280,7 @@ app.post(
       return res.status(401).json({ error: 'That username and password do not match.' });
     req.session.regenerate((err) => {
       if (err) return res.status(500).json({ error: 'Could not start a session.' });
-      req.session.user = { id: row.id, username: row.username, role: row.role };
+      req.session.user = { id: row.id, username: row.username, role: row.role, mustChangePassword: Boolean(row.must_change_password) };
       req.session.csrf = crypto.randomBytes(18).toString('base64url');
       res.json({ ok: true, user: req.session.user, csrf: req.session.csrf });
     });
@@ -293,19 +307,20 @@ app.post(
     if (!row || !bcrypt.compareSync(String(current || ''), row.password))
       return res.status(401).json({ error: 'Current password is not right.' });
     if (!nextPw || nextPw.length < 10) return res.status(400).json({ error: 'New password must be at least 10 characters.' });
-    db.prepare('UPDATE users SET password = ? WHERE id = ?').run(bcrypt.hashSync(nextPw, 12), row.id);
-    res.json({ ok: true });
+    db.prepare('UPDATE users SET password = ?, must_change_password = 0 WHERE id = ?').run(bcrypt.hashSync(nextPw, 12), row.id);
+    req.session.user.mustChangePassword = false;
+    res.json({ ok: true, user: req.session.user, csrf: req.session.csrf });
   })
 );
 
-app.get('/api/staff-users', requireStaff, (req, res) => {
+app.get('/api/staff-users', requireAdmin, (req, res) => {
   const users = db.prepare("SELECT id, username FROM users WHERE role = 'staff' ORDER BY username").all();
   res.json(users);
 });
 
 app.post(
   '/api/staff-users',
-  requireStaff,
+  requireAdmin,
   ok((req, res) => {
     const username = String(req.body?.username || '').trim().toLowerCase();
     const password = String(req.body?.password || '');
@@ -320,15 +335,15 @@ app.post(
       return res.status(409).json({ error: 'That username is already in use.' });
     }
     const result = db
-      .prepare('INSERT INTO users (username, password, role, created_at) VALUES (?, ?, ?, ?)')
-      .run(username, bcrypt.hashSync(password, 12), 'staff', Date.now());
+      .prepare('INSERT INTO users (username, password, role, must_change_password, created_at) VALUES (?, ?, ?, ?, ?)')
+.run(username, bcrypt.hashSync(password, 12), 'staff', 1, Date.now());
     res.status(201).json({ id: result.lastInsertRowid, username });
   })
 );
 
 app.delete(
   '/api/staff-users/:id',
-  requireStaff,
+  requireAdmin,
   ok((req, res) => {
     const user = db.prepare("SELECT id FROM users WHERE id = ? AND role = 'staff'").get(req.params.id);
     if (!user) return res.status(404).json({ error: 'Staff account not found.' });
