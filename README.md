@@ -26,7 +26,7 @@ two never touch.
 You need [Node.js](https://nodejs.org) 18.17 or newer. Check with `node -v`.
 
 ```bash
-cd school-picture-day
+cd godaddy-deploy
 npm install
 cp .env.example .env
 node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
@@ -50,7 +50,7 @@ This application requires GoDaddy hosting with **Setup Node.js App** or
 Builder plans cannot run it.
 
 1. In cPanel, create a Node.js application using Node 18 or newer.
-2. Set the application root to `PictureDayFinal` and the startup file to
+2. Set the application root to `godaddy-deploy` and the startup file to
       `server.js`.
 3. Upload this folder's contents into the application root, then run
       `npm install --production` there.
@@ -65,7 +65,7 @@ Builder plans cannot run it.
 The application must be able to write to `data/` and `uploads/`. Back up both
 locations because they contain the database and uploaded photographs.
 
-**Editing the site:** open the whole `school-picture-day` folder in VS Code
+**Editing the site:** open the whole `godaddy-deploy` folder in VS Code
 (File → Open Folder). The look of the parent-facing pages lives in
 `public/brand.css`; the staff screens are `public/app.css`. Most branding
 changes should happen in the design studio rather than in code.
@@ -195,8 +195,8 @@ the server is reachable from outside the building.
 - [ ] **Least access.** One staff account per person who genuinely needs it.
       Do not share a login. Do not let the design password near the roster.
 - [ ] **Keep it patched.** `npm audit` occasionally, and update Node.
-- [ ] **Sessions are in memory.** Restarting the server signs everyone out.
-      For a busy multi-user install, move to a session store backed by the
+- [ ] **Sessions are stored in SQLite.** Restarting the server does not sign staff out.
+      Session data is stored alongside the application database in the
       database.
 - [ ] **Uploads are trusted input.** Only signed-in staff can upload, and only
       images are accepted, but the files are served back to browsers — keep the
@@ -212,7 +212,7 @@ still get their photos.
 ## Layout
 
 ```
-school-picture-day/
+godaddy-deploy/
 ├── server.js              API, auth, sorting, galleries
 ├── lib/
 │   ├── db.js              schema, settings, code generation
