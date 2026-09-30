@@ -45,6 +45,7 @@ async function send({ to, subject, text, link, replyTo, palette }) {
     to: toArray(to),
     subject,
     text,
+    from: 'Picture Day <support@calcharterpicts.org>',
     html: toHtml(text, link, palette)
   };
 
