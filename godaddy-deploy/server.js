@@ -18,10 +18,7 @@ const { parse: parseCsv } = require('csv-parse/sync');
 const { db, config, branding, setSetting, newQrCode, newGalleryToken, DEFAULT_BRANDING } = require('./lib/db.js');
 const cards = require('./lib/cards.js');
 const mail = require('./lib/mail.js');
-// TEMP ADMIN RESET — REMOVE AFTER LOGIN
-db.prepare('UPDATE users SET password = ?, must_change_password = 0 WHERE username = ?')
-  .run(bcrypt.hashSync('password01!', 12), 'admin42');
-// END TEMP ADMIN RESET
+
 
 
 const app = express();
