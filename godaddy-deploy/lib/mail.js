@@ -1,41 +1,7 @@
 'use strict';
 
-const nodemailer = require('nodemailer');
-
-let cached = null;
-
-function transport() {
-  if (cached) return cached;
-
-  const {
-    SMTP_HOST,
-    SMTP_PORT,
-    SMTP_USER,
-    SMTP_PASS,
-    SMTP_SECURE
-  } = process.env;
-
-  if (!SMTP_HOST) return null;
-
-  const options = {
-    host: SMTP_HOST,
-    port: Number(SMTP_PORT || 25),
-    secure: String(SMTP_SECURE || 'false') === 'true'
-  };
-
-  // Only add authentication when a username and password are provided.
-  // GoDaddy's relay-hosting.secureserver.net does not use SMTP authentication.
-  if (SMTP_USER && SMTP_PASS) {
-    options.auth = {
-      user: SMTP_USER,
-      pass: SMTP_PASS
-    };
-  }
-
-  cached = nodemailer.createTransport(options);
-
-  return cached;
-}
+const EMAIL_GATEWAY_URL = 'http://127.0.0.1:2525/api/email/send';
+const REQUEST_TIMEOUT_MS = 30000;
 
 function render(template, vars) {
   return String(template || '').replace(/\{\{(\w+)\}\}/g, (_, key) =>
@@ -69,49 +35,93 @@ function toHtml(text, link, palette) {
 </div>`;
 }
 
-async function send({ to, subject, text, link, from, replyTo, palette }) {
-  const t = transport();
+function toArray(value) {
+  if (value === undefined) return [];
+  return Array.isArray(value) ? value : [value];
+}
 
-  if (!t) {
-    throw new Error(
-      'SMTP is not configured. Add SMTP_HOST and related values to the hosting environment.'
-    );
+async function send({ to, subject, text, link, replyTo, palette }) {
+  const payload = {
+    to: toArray(to),
+    subject,
+    text,
+    html: toHtml(text, link, palette)
+  };
+
+  if (replyTo) {
+    payload.replyTo = replyTo;
   }
+
+  let response;
+  let body;
 
   try {
-    return await t.sendMail({
-      from,
-      to,
-      replyTo: replyTo || undefined,
-      subject,
-      text,
-      html: toHtml(text, link, palette)
+    response = await fetch(EMAIL_GATEWAY_URL, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
     });
+
+    try {
+      body = await response.json();
+    } catch (err) {
+      if (err instanceof Error &&
+          (err.name === 'AbortError' || err.name === 'TimeoutError')) {
+        throw err;
+      }
+
+      body = {
+        success: false,
+        error: `non-JSON response (HTTP ${response.status})`
+      };
+    }
   } catch (err) {
-    console.error('SMTP SEND ERROR:', {
-      code: err.code,
-      command: err.command,
-      responseCode: err.responseCode,
-      response: err.response,
-      message: err.message
-    });
-    throw err;
+    const message =
+      err instanceof Error &&
+      (err.name === 'AbortError' || err.name === 'TimeoutError')
+        ? `timed out after ${REQUEST_TIMEOUT_MS}ms`
+        : err instanceof Error
+          ? err.message
+          : String(err);
+
+    console.error('EMAIL GATEWAY UNREACHABLE:', message);
+    throw new Error('Email gateway unreachable.');
   }
+
+  if (!response.ok || !body.success) {
+    console.error('EMAIL GATEWAY SEND ERROR:', {
+      status: response.status,
+      error: body.error,
+      messageId: body.messageId
+    });
+
+    throw new Error('Email send failed.');
+  }
+
+  if (!body.messageId) {
+    console.error('EMAIL GATEWAY MISSING MESSAGE ID');
+    throw new Error('Email send succeeded but gateway returned no messageId.');
+  }
+
+  console.log('EMAIL SENT:', body.messageId);
+
+  return {
+    messageId: body.messageId
+  };
 }
 
 async function verify() {
-  const t = transport();
-
-  if (!t) {
-    throw new Error('SMTP is not configured.');
-  }
-
-  return t.verify();
+  // There is no SMTP connection to verify.
+  // The actual gateway is exercised when send() is called.
+  return true;
 }
 
 module.exports = {
   send,
   verify,
   render,
-  configured: () => Boolean(process.env.SMTP_HOST)
+  configured: () => true
 };

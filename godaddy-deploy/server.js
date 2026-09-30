@@ -980,7 +980,7 @@ app.post(
       try {
         await mail.send({
           to: s.parent_email,
-          from: cfg.emailFrom || process.env.SMTP_FROM || process.env.SMTP_USER,
+          from: cfg.emailFrom,
           replyTo: cfg.emailReplyTo,
           subject: mail.render(cfg.emailSubject, vars),
           text: mail.render(cfg.emailBody, vars),
@@ -1018,7 +1018,7 @@ app.post(
     };
     await mail.send({
       to,
-      from: cfg.emailFrom || process.env.SMTP_FROM || process.env.SMTP_USER,
+      from: cfg.emailFrom,
       replyTo: cfg.emailReplyTo,
       subject: `[test] ${mail.render(cfg.emailSubject, vars)}`,
       text: mail.render(cfg.emailBody, vars),
