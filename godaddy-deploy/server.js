@@ -21,6 +21,103 @@ const mail = require('./lib/mail.js');
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
+
+/*
+ * Persistent SQLite-backed session store.
+ * This keeps staff sessions across Node process restarts.
+ */
+class SqliteSessionStore extends session.Store {
+  constructor(database) {
+    super();
+    this.db = database;
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS sessions (
+        sid         TEXT PRIMARY KEY,
+        sess        TEXT NOT NULL,
+        expires_at  INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+    `);
+
+    this.db.prepare(
+      'DELETE FROM sessions WHERE expires_at IS NOT NULL AND expires_at <= ?'
+    ).run(Date.now());
+  }
+
+  get(sid, callback) {
+    try {
+      const row = this.db.prepare(
+        'SELECT sess, expires_at FROM sessions WHERE sid = ?'
+      ).get(sid);
+
+      if (!row) return callback(null, null);
+
+      if (row.expires_at && row.expires_at <= Date.now()) {
+        this.db.prepare('DELETE FROM sessions WHERE sid = ?').run(sid);
+        return callback(null, null);
+      }
+
+      callback(null, JSON.parse(row.sess));
+    } catch (err) {
+      callback(err);
+    }
+  }
+
+  set(sid, sess, callback) {
+    try {
+      const expiresAt = sess.cookie?.expires
+        ? new Date(sess.cookie.expires).getTime()
+        : null;
+
+      this.db.prepare(`
+        INSERT INTO sessions (sid, sess, expires_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(sid) DO UPDATE SET
+          sess = excluded.sess,
+          expires_at = excluded.expires_at
+      `).run(sid, JSON.stringify(sess), expiresAt);
+
+      if (callback) callback(null);
+    } catch (err) {
+      if (callback) callback(err);
+    }
+  }
+
+  destroy(sid, callback) {
+    try {
+      this.db.prepare('DELETE FROM sessions WHERE sid = ?').run(sid);
+      if (callback) callback(null);
+    } catch (err) {
+      if (callback) callback(err);
+    }
+  }
+
+  touch(sid, sess, callback) {
+    try {
+      const expiresAt = sess.cookie?.expires
+        ? new Date(sess.cookie.expires).getTime()
+        : null;
+
+      this.db.prepare(
+        'UPDATE sessions SET expires_at = ? WHERE sid = ?'
+      ).run(expiresAt, sid);
+
+      if (callback) callback(null);
+    } catch (err) {
+      if (callback) callback(err);
+    }
+  }
+
+  clear(callback) {
+    try {
+      this.db.prepare('DELETE FROM sessions').run();
+      if (callback) callback(null);
+    } catch (err) {
+      if (callback) callback(err);
+    }
+  }
+}
 const ROOT = __dirname;
 const VIEWS = path.join(ROOT, 'views');
 const UP_FULL = path.join(ROOT, 'uploads', 'full');
@@ -65,6 +162,7 @@ if (!process.env.SESSION_SECRET) {
 
 app.use(
   session({
+    store: new SqliteSessionStore(db),
     name: 'pd.sid',
     secret: process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex'),
     resave: false,
