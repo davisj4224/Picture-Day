@@ -290,7 +290,14 @@ app.post(
 );
 
 app.post('/api/logout', (req, res) => req.session.destroy(() => res.json({ ok: true })));
-
+app.use((req, res, next) => {
+  if (req.path === '/api/me') {
+    console.log('DEBUG /api/me cookie:', req.headers.cookie);
+    console.log('DEBUG /api/me sessionID:', req.sessionID);
+    console.log('DEBUG /api/me user:', req.session.user);
+  }
+  next();
+});
 app.get('/api/me', (req, res) =>
   res.json({
     user: req.session.user || null,
