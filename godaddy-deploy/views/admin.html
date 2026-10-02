@@ -162,6 +162,15 @@
           <input type="file" id="files" accept="image/*" multiple>
           <p class="hint" style="margin:12px 0 0">Keep this tab open until the count finishes. Large batches take a few minutes.</p>
         </div>
+        <div id="queuePanel" hidden>
+          <h2>Confirm file order</h2>
+          <p class="hint">The first file starts the batch order. Move files so each QR card comes immediately before that student's photos.</p>
+          <ol id="uploadQueue" class="upload-queue" aria-label="Batch upload order"></ol>
+          <div class="row">
+            <button id="startUpload" class="primary" type="button">Upload in this order</button>
+            <button id="clearUploadQueue" type="button">Clear files</button>
+          </div>
+        </div>
         <div class="progress"><i id="bar"></i></div>
         <div class="row" style="justify-content:space-between">
           <span class="hint" id="progressText" style="margin:0">Waiting for files.</span>

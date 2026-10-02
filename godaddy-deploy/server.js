@@ -686,7 +686,7 @@ function sortBatch(batchId) {
   const students = db.prepare('SELECT id, qr_code FROM students').all();
   const byCode = new Map(students.map((s) => [s.qr_code.toUpperCase(), s.id]));
   const photos = db
-    .prepare('SELECT * FROM photos WHERE batch_id = ? ORDER BY COALESCE(captured_at, 0), seq_index, id')
+    .prepare('SELECT * FROM photos WHERE batch_id = ? ORDER BY seq_index, id')
     .all(batchId);
 
   const setMarker = db.prepare('UPDATE photos SET student_id=?, is_marker=1, hidden=1 WHERE id=?');

@@ -211,6 +211,12 @@ tr:hover td { background: #fafbfa; }
 }
 .drop.over { border-color: var(--primary); background: #eff6f8; }
 
+.upload-queue { list-style: none; display: grid; gap: 6px; margin: 10px 0 14px; padding: 0; max-height: 300px; overflow: auto; }
+.upload-queue li { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 7px 9px; border: 1px solid var(--line); border-radius: var(--radius); }
+.upload-queue .queue-number { flex: none; width: 2.4em; color: var(--muted); font-variant-numeric: tabular-nums; }
+.upload-queue .queue-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.upload-queue .queue-actions { display: flex; flex: none; gap: 4px; }
+
 .progress { height: 6px; background: var(--line-2); border-radius: 999px; overflow: hidden; margin: 12px 0 6px; }
 .progress i { display: block; height: 100%; background: var(--primary); width: 0; transition: width 0.2s; }
 

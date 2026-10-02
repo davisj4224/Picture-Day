@@ -281,65 +281,138 @@ const drop = $('#drop');
 ['dragleave', 'drop'].forEach((ev) =>
   drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove('over'); })
 );
-drop.addEventListener('drop', (e) => handleFiles([...e.dataTransfer.files]));
-$('#files').addEventListener('change', (e) => { handleFiles([...e.target.files]); e.target.value = ''; });
+drop.addEventListener('drop', (e) => stageFiles([...e.dataTransfer.files]));
+$('#files').addEventListener('change', (e) => { stageFiles([...e.target.files]); e.target.value = ''; });
 
 let busy = false;
+let queuedFiles = [];
 
-async function handleFiles(list) {
-  const files = list.filter((f) => /^image\//.test(f.type)).sort((a, b) => (a.lastModified - b.lastModified) || a.name.localeCompare(b.name, undefined, { numeric: true }));
-  if (!files.length) return toast('Those files were not images.', 'bad');
+function stageFiles(list) {
   if (busy) return toast('Still uploading the last batch.', 'bad');
+  const images = list.filter((file) => /^image\//.test(file.type));
+  if (!images.length) return toast('Those files were not images.', 'bad');
+  queuedFiles = images;
+  renderUploadQueue();
+}
+
+function renderUploadQueue() {
+  const panel = $('#queuePanel');
+  const list = $('#uploadQueue');
+  list.replaceChildren();
+  queuedFiles.forEach((file, index) => {
+    const item = document.createElement('li');
+    const number = document.createElement('span');
+    number.className = 'queue-number';
+    number.textContent = `${index + 1}.`;
+    const name = document.createElement('span');
+    name.className = 'queue-name';
+    name.textContent = file.name;
+    const actions = document.createElement('span');
+    actions.className = 'queue-actions';
+    for (const [direction, label, disabled] of [
+      ['up', 'Move up', index === 0],
+      ['down', 'Move down', index === queuedFiles.length - 1]
+    ]) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'ghost small';
+      button.dataset.move = direction;
+      button.dataset.index = String(index);
+      button.textContent = label;
+      button.disabled = busy || disabled;
+      button.setAttribute('aria-label', `${label}: ${file.name}`);
+      actions.append(button);
+    }
+    item.append(number, name, actions);
+    list.append(item);
+  });
+  panel.hidden = queuedFiles.length === 0;
+  $('#startUpload').disabled = busy || queuedFiles.length === 0;
+  $('#clearUploadQueue').disabled = busy || queuedFiles.length === 0;
+}
+
+$('#uploadQueue').addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-move]');
+  if (!button || busy) return;
+  const index = Number(button.dataset.index);
+  const destination = index + (button.dataset.move === 'up' ? -1 : 1);
+  if (destination < 0 || destination >= queuedFiles.length) return;
+  [queuedFiles[index], queuedFiles[destination]] = [queuedFiles[destination], queuedFiles[index]];
+  renderUploadQueue();
+});
+
+$('#clearUploadQueue').addEventListener('click', () => {
+  if (busy) return;
+  queuedFiles = [];
+  renderUploadQueue();
+});
+
+$('#startUpload').addEventListener('click', uploadQueuedFiles);
+
+async function uploadQueuedFiles() {
+  if (!queuedFiles.length || busy) return;
   busy = true;
 
+  const files = queuedFiles.slice();
+  renderUploadQueue();
   const log = $('#uploadLog');
   log.hidden = false;
   log.textContent = '';
   const line = (t) => { log.textContent += t + '\n'; log.scrollTop = log.scrollHeight; };
 
-  const batch = await api('/api/batches', { method: 'POST', body: { name: $('#batchName').value || `Batch ${new Date().toLocaleString()}` } });
-  line(`Batch “${batch.name}” — ${files.length} files`);
+  try {
+    const batch = await api('/api/batches', { method: 'POST', body: { name: $('#batchName').value || `Batch ${new Date().toLocaleString()}` } });
+    queuedFiles = [];
+    renderUploadQueue();
+    line(`Batch “${batch.name}” — ${files.length} files`);
 
-  let done = 0, codes = 0, failed = 0;
-  const bar = $('#bar');
-  const text = $('#progressText');
+    let done = 0, codes = 0, failed = 0;
+    const bar = $('#bar');
+    const text = $('#progressText');
+    bar.style.width = '0';
 
-  const queue = files.map((f, i) => ({ f, i }));
-  const worker = async () => {
-    while (queue.length) {
-      const { f, i } = queue.shift();
-      try {
-        const { qr, thumb, capturedAt } = await scan(f);
-        const form = new FormData();
-        form.append('file', f, f.name);
-        if (thumb) form.append('thumb', thumb, 'thumb.jpg');
-        form.append('batchId', batch.id);
-        form.append('seq', String(i));
-        form.append('capturedAt', String(capturedAt));
-        if (qr) { form.append('qr', qr); codes++; line(`card found in ${f.name}: ${qr}`); }
-        await api('/api/upload', { method: 'POST', body: form });
-      } catch (err) {
-        failed++;
-        line(`failed ${f.name}: ${err.message}`);
+    const queue = files.map((file, seq) => ({ file, seq }));
+    const worker = async () => {
+      while (queue.length) {
+        const { file, seq } = queue.shift();
+        try {
+          const { qr, thumb, capturedAt } = await scan(file);
+          const form = new FormData();
+          form.append('file', file, file.name);
+          if (thumb) form.append('thumb', thumb, 'thumb.jpg');
+          form.append('batchId', batch.id);
+          form.append('seq', String(seq));
+          form.append('capturedAt', String(capturedAt));
+          if (qr) { form.append('qr', qr); codes++; line(`card found in ${file.name}: ${qr}`); }
+          await api('/api/upload', { method: 'POST', body: form });
+        } catch (err) {
+          failed++;
+          line(`failed ${file.name}: ${err.message}`);
+        }
+        done++;
+        bar.style.width = `${(done / files.length) * 100}%`;
+        text.textContent = `${done} of ${files.length} uploaded · ${codes} cards read${failed ? ` · ${failed} failed` : ''}`;
       }
-      done++;
-      bar.style.width = `${(done / files.length) * 100}%`;
-      text.textContent = `${done} of ${files.length} uploaded · ${codes} cards read${failed ? ` · ${failed} failed` : ''}`;
-    }
-  };
+    };
 
-  await Promise.all([worker(), worker(), worker()]);
+    await Promise.all([worker(), worker(), worker()]);
 
-  const sorted = await api(`/api/batches/${batch.id}/sort`, { method: 'POST' });
-  line(`sorted: ${sorted.markers} cards, ${sorted.matched} photos matched, ${sorted.unmatched} unmatched`);
-  if (sorted.unknownCodes.length) line(`codes not on the roster: ${sorted.unknownCodes.join(', ')}`);
-  text.textContent = `Done. ${sorted.matched} photos matched, ${sorted.unmatched} need review.`;
-  toast(`Batch finished — ${sorted.matched} matched, ${sorted.unmatched} to review.`, sorted.unmatched ? '' : 'good');
+    const sorted = await api(`/api/batches/${batch.id}/sort`, { method: 'POST' });
+    line(`sorted: ${sorted.markers} cards, ${sorted.matched} photos matched, ${sorted.unmatched} unmatched`);
+    if (sorted.unknownCodes.length) line(`codes not on the roster: ${sorted.unknownCodes.join(', ')}`);
+    text.textContent = `Done. ${sorted.matched} photos matched, ${sorted.unmatched} need review.`;
+    toast(`Batch finished — ${sorted.matched} matched, ${sorted.unmatched} to review.`, sorted.unmatched ? '' : 'good');
 
-  busy = false;
-  loadStats();
-  loadBatches();
-  loadStudents();
+    loadStats();
+    loadBatches();
+    loadStudents();
+  } catch (err) {
+    line(`batch failed: ${err.message}`);
+    toast(err.message, 'bad');
+  } finally {
+    busy = false;
+    renderUploadQueue();
+  }
 }
 
 async function loadBatches() {
