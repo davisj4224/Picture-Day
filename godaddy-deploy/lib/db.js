@@ -77,6 +77,19 @@ CREATE TABLE IF NOT EXISTS email_log (
   sent_at     INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS gallery_email_attempts (
+  id              INTEGER PRIMARY KEY,
+  student_id      INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+  recipient_email TEXT NOT NULL,
+  email_type      TEXT NOT NULL,
+  attempted_at    INTEGER NOT NULL,
+  status          TEXT NOT NULL,
+  error_message   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_gallery_email_attempts_student_time
+  ON gallery_email_attempts(student_id, attempted_at DESC);
+
 CREATE TABLE IF NOT EXISTS settings (
   key    TEXT PRIMARY KEY,
   value  TEXT NOT NULL

@@ -218,9 +218,21 @@
         <div class="row" id="galleryActions" style="margin-top:14px" hidden>
           <button class="primary" id="publishOne">Publish this gallery</button>
           <button id="unpublishOne">Unpublish</button>
+          <button id="resendGalleryEmail" disabled>Resend Gallery Email</button>
           <button id="copyLink">Copy link</button>
           <a class="btn small" id="openLink" target="_blank" rel="noopener" hidden>Open as a parent sees it ↗</a>
         </div>
+      </div>
+
+      <div class="card" id="galleryEmailHistory" hidden>
+        <h2>Email status and history</h2>
+        <p id="galleryEmailSummary" class="notice" role="status" aria-live="polite"></p>
+        <p class="hint">“Accepted by GoDaddy” means the email was accepted by the GoDaddy email gateway; it does not confirm delivery to the recipient's inbox.</p>
+        <p id="galleryEmailRecipient" class="hint"></p>
+        <div style="overflow-x:auto"><table>
+          <thead><tr><th>Attempted</th><th>Recipient</th><th>Status</th><th>Failure reason</th></tr></thead>
+          <tbody id="galleryEmailAttempts"></tbody>
+        </table></div>
       </div>
     </section>
 

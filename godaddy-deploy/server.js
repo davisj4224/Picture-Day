@@ -924,6 +924,99 @@ function emailVars(s) {
   };
 }
 
+function validRecipientEmail(value) {
+  const email = String(value || '').trim();
+  return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+async function sendGalleryEmail(student) {
+  const cfg = config();
+  const palette = branding('published').palette;
+  const recipient = String(student.parent_email || '').trim();
+  const vars = emailVars(student);
+  const attemptedAt = Date.now();
+  const attempt = db.prepare(
+    `INSERT INTO gallery_email_attempts
+      (student_id, recipient_email, email_type, attempted_at, status)
+     VALUES (?, ?, 'gallery', ?, 'pending')`
+  ).run(student.id, recipient, attemptedAt);
+
+  try {
+    await mail.send({
+      to: recipient,
+      from: cfg.emailFrom,
+      replyTo: cfg.emailReplyTo,
+      subject: mail.render(cfg.emailSubject, vars),
+      text: mail.render(cfg.emailBody, vars),
+      link: vars.link,
+      palette
+    });
+  } catch (error) {
+    const message = String(error?.message || error).slice(0, 300);
+    db.prepare('UPDATE gallery_email_attempts SET status = ?, error_message = ? WHERE id = ?')
+      .run('failed', message, attempt.lastInsertRowid);
+    throw error;
+  }
+
+  db.prepare('UPDATE gallery_email_attempts SET status = ? WHERE id = ?')
+    .run('sent', attempt.lastInsertRowid);
+  return { attemptedAt };
+}
+
+app.get('/api/students/:id/email-history', requireStaff, (req, res) => {
+  const student = db.prepare(
+    `SELECT parent_email, published_at,
+      (gallery_token IS NOT NULL AND gallery_token <> '') AS has_gallery_token
+     FROM students WHERE id = ?`
+  ).get(req.params.id);
+  if (!student) return res.status(404).json({ error: 'No such student.' });
+
+  const attempts = db.prepare(
+    `SELECT id, recipient_email, email_type, attempted_at, status, error_message
+     FROM gallery_email_attempts
+     WHERE student_id = ? AND email_type = 'gallery'
+     ORDER BY attempted_at DESC, id DESC LIMIT 10`
+  ).all(req.params.id);
+
+  res.json({
+    published: Boolean(student.published_at && student.has_gallery_token),
+    recipientEmail: String(student.parent_email || '').trim(),
+    hasValidRecipient: validRecipientEmail(student.parent_email),
+    attempts
+  });
+});
+
+app.post(
+  '/api/students/:id/resend-gallery-email',
+  requireStaff,
+  ok(async (req, res) => {
+    const student = db.prepare('SELECT * FROM students WHERE id = ?').get(req.params.id);
+    if (!student) return res.status(404).json({ error: 'No such student.' });
+    if (!student.published_at || !student.gallery_token) {
+      return res.status(409).json({ status: 'unpublished', error: 'Gallery is not published.' });
+    }
+
+    const recipient = String(student.parent_email || '').trim();
+    if (!validRecipientEmail(recipient)) {
+      return res.status(400).json({ status: 'no_recipient', error: 'No valid recipient email is on file.' });
+    }
+
+    let result;
+    try {
+      result = await sendGalleryEmail({ ...student, parent_email: recipient });
+    } catch (error) {
+      const attemptedAt = Date.now();
+      db.prepare('INSERT INTO email_log (student_id, to_email, status, detail, sent_at) VALUES (?,?,?,?,?)')
+        .run(student.id, recipient, 'failed', String(error.message || error).slice(0, 300), attemptedAt);
+      return res.status(502).json({ status: 'failed', error: String(error.message || error).slice(0, 300) });
+    }
+
+    db.prepare('INSERT INTO email_log (student_id, to_email, status, sent_at) VALUES (?,?,?,?)')
+      .run(student.id, recipient, 'sent', Date.now());
+    return res.json({ status: 'sent', acceptedByGateway: true, attemptedAt: result.attemptedAt });
+  })
+);
+
 app.get('/api/email/pending', requireStaff, (req, res) => {
   const rows = db
     .prepare(
@@ -969,12 +1062,10 @@ app.post(
   '/api/email/send',
   requireStaff,
   ok(async (req, res) => {
-    const cfg = config();
     const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Boolean) : [];
     if (!ids.length) return res.status(400).json({ error: 'Choose at least one student.' });
     if (!mail.configured()) return res.status(400).json({ error: 'SMTP is not configured in .env.' });
 
-    const b = branding('published');
     const out = { sent: 0, failed: 0, errors: [] };
     for (const id of ids) {
       const s = db.prepare('SELECT * FROM students WHERE id = ?').get(id);
@@ -983,17 +1074,8 @@ app.post(
         out.errors.push({ id, error: 'missing email or unpublished gallery' });
         continue;
       }
-      const vars = emailVars(s);
       try {
-        await mail.send({
-          to: s.parent_email,
-          from: cfg.emailFrom,
-          replyTo: cfg.emailReplyTo,
-          subject: mail.render(cfg.emailSubject, vars),
-          text: mail.render(cfg.emailBody, vars),
-          link: vars.link,
-          palette: b.palette
-        });
+        await sendGalleryEmail(s);
         db.prepare('INSERT INTO email_log (student_id, to_email, status, sent_at) VALUES (?,?,?,?)').run(
           s.id, s.parent_email, 'sent', Date.now()
         );

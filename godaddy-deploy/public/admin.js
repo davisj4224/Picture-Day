@@ -421,13 +421,18 @@ $('#galleryStudent').addEventListener('change', (e) => openGallery(e.target.valu
 
 async function openGallery(id) {
   if (!id) {
+    state.gallery = null;
     $('#galleryStrip').innerHTML = '';
     $('#galleryActions').hidden = true;
+    $('#galleryEmailHistory').hidden = true;
+    $('#resendGalleryEmail').disabled = true;
     return;
   }
   const s = state.students.find((x) => x.id === Number(id));
   state.gallery = s;
+  $('#resendGalleryEmail').disabled = true;
   const photos = await api(`/api/students/${id}/photos`);
+  if (Number($('#galleryStudent').value) !== Number(id)) return;
   const shots = photos.filter((p) => !p.isMarker);
 
   $('#galleryStatus').textContent = s.publishedAt
@@ -452,7 +457,74 @@ async function openGallery(id) {
   const link = s.galleryToken ? `${location.origin}/g/${s.galleryToken}` : '';
   $('#openLink').hidden = !link;
   $('#openLink').href = link;
+  $('#galleryEmailHistory').hidden = false;
+  await loadGalleryEmailHistory(id);
 }
+
+async function loadGalleryEmailHistory(id) {
+  const history = await api(`/api/students/${id}/email-history`);
+  if (Number($('#galleryStudent').value) !== Number(id)) return;
+  const latest = history.attempts[0];
+  const summary = $('#galleryEmailSummary');
+
+  $('#resendGalleryEmail').disabled = !history.published || !history.hasValidRecipient;
+  $('#galleryEmailRecipient').textContent = history.recipientEmail
+    ? `Current recipient on file: ${history.recipientEmail}`
+    : 'No recipient email is on file.';
+
+  if (!history.published) {
+    summary.textContent = 'Gallery is not published. Resending is unavailable.';
+    summary.classList.remove('bad');
+  } else if (!history.hasValidRecipient) {
+    summary.textContent = 'No valid recipient email is on file.';
+    summary.classList.add('bad');
+  } else if (latest?.status === 'sent') {
+    summary.textContent = 'Latest attempt: GoDaddy accepted the message.';
+    summary.classList.remove('bad');
+  } else if (latest?.status === 'failed') {
+    summary.textContent = `Latest attempt failed: ${latest.error_message || 'No failure reason was recorded.'}`;
+    summary.classList.add('bad');
+  } else if (latest?.status === 'pending') {
+    summary.textContent = 'Latest attempt is pending or was interrupted; delivery status is unknown.';
+    summary.classList.remove('bad');
+  } else {
+    summary.textContent = 'No gallery email attempts have been recorded.';
+    summary.classList.remove('bad');
+  }
+
+  $('#galleryEmailAttempts').innerHTML = history.attempts.length
+    ? history.attempts.map((attempt) => {
+        const status = attempt.status === 'sent'
+          ? 'GoDaddy accepted'
+          : attempt.status === 'failed'
+            ? 'Failed'
+            : 'Pending / unknown';
+        return `<tr>
+          <td>${esc(new Date(attempt.attempted_at).toLocaleString())}</td>
+          <td>${esc(attempt.recipient_email)}</td>
+          <td>${status}</td>
+          <td>${esc(attempt.error_message || '')}</td>
+        </tr>`;
+      }).join('')
+    : '<tr><td colspan="4" class="hint">No attempts recorded.</td></tr>';
+}
+
+$('#resendGalleryEmail').addEventListener('click', async () => {
+  const student = state.gallery;
+  if (!student || $('#resendGalleryEmail').disabled) return;
+
+  $('#resendGalleryEmail').disabled = true;
+  try {
+    const result = await api(`/api/students/${student.id}/resend-gallery-email`, { method: 'POST' });
+    toast(result.acceptedByGateway ? 'GoDaddy accepted the gallery email.' : 'Gallery email sent.', 'good');
+    await loadGalleryEmailHistory(student.id);
+    loadPending();
+    loadStats();
+  } catch (error) {
+    toast(error.message, 'bad');
+    await loadGalleryEmailHistory(student.id);
+  }
+});
 
 $('#galleryStrip').addEventListener('click', async (e) => {
   if (e.target.tagName === 'IMG') return openLightbox(e.target.src.replace('?size=thumb', ''));
