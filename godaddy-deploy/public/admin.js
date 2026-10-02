@@ -421,12 +421,31 @@ async function loadBatches() {
     .map(
       (b) => `<tr><td>${esc(b.name)}</td><td class="num">${b.photos}</td><td>${fmtDate(b.created_at)}</td>
         <td>${b.sorted_at ? fmtDate(b.sorted_at) : '<span class="pill wait">not sorted</span>'}</td>
-        <td><button class="ghost small" data-batch="${b.id}">Sort again</button></td></tr>`
+        <td><button class="ghost small" data-batch="${b.id}">Sort again</button>
+          <button class="ghost small danger" data-batch-delete="${b.id}" data-batch-name="${esc(b.name)}" data-batch-count="${b.photos}">Delete</button></td></tr>`
     )
     .join('');
 }
 
 $('#batchTable').addEventListener('click', async (e) => {
+  const deleteButton = e.target.closest('button[data-batch-delete]');
+  if (deleteButton) {
+    const name = deleteButton.dataset.batchName;
+    const count = Number(deleteButton.dataset.batchCount) || 0;
+    if (!confirm(`Permanently delete batch “${name}” and its ${count} photos, including full-size files and thumbnails? Published galleries will lose these photos; existing gallery links and email history will remain.`)) return;
+    try {
+      const result = await api(`/api/batches/${deleteButton.dataset.batchDelete}`, { method: 'DELETE' });
+      toast(`Batch deleted. ${result.deletedPhotos} photos and their files removed.`, 'good');
+      await loadBatches();
+      await loadStats();
+      await loadStudents();
+      const galleryId = $('#galleryStudent').value;
+      if (galleryId) await openGallery(galleryId);
+    } catch (err) {
+      toast(err.message, 'bad');
+    }
+    return;
+  }
   const btn = e.target.closest('button[data-batch]');
   if (!btn) return;
   const r = await api(`/api/batches/${btn.dataset.batch}/sort`, { method: 'POST' });
@@ -446,9 +465,10 @@ async function loadReview() {
         .map(
           (p) => `<div class="shot-card" data-id="${p.id}">
             <img src="/api/photos/${p.id}/file?size=thumb" alt="${esc(p.original || 'photo')}" loading="lazy">
-            <div class="bar">
+            <div class="bar photo-actions">
               <label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" data-sel="${p.id}" style="width:auto"> pick</label>
               <span>${p.capturedAt ? new Date(p.capturedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''}</span>
+              <button class="ghost small danger" data-delete-photo="${p.id}">Delete</button>
             </div>
           </div>`
         )
@@ -460,6 +480,11 @@ $('#reloadReview').addEventListener('click', loadReview);
 
 $('#reviewStrip').addEventListener('click', (e) => {
   if (e.target.tagName === 'IMG') return openLightbox(e.target.src.replace('?size=thumb', ''));
+  const deleteButton = e.target.closest('button[data-delete-photo]');
+  if (deleteButton) {
+    deletePhoto(deleteButton.dataset.deletePhoto).then((deleted) => deleted && loadReview());
+    return;
+  }
   const cb = e.target.closest('input[data-sel]');
   if (!cb) return;
   const id = Number(cb.dataset.sel);
@@ -517,9 +542,10 @@ async function openGallery(id) {
         .map(
           (p) => `<div class="shot-card ${p.hidden ? 'is-hidden' : ''}" data-id="${p.id}">
             <img src="/api/photos/${p.id}/file?size=thumb" alt="" loading="lazy">
-            <div class="bar">
+            <div class="bar photo-actions">
               <button class="ghost small" data-act="toggle" data-hidden="${p.hidden}">${p.hidden ? 'Show' : 'Hide'}</button>
               <button class="ghost small" data-act="move">Move</button>
+              <button class="ghost small danger" data-act="delete">Delete</button>
             </div>
           </div>`
         )
@@ -532,6 +558,19 @@ async function openGallery(id) {
   $('#openLink').href = link;
   $('#galleryEmailHistory').hidden = false;
   await loadGalleryEmailHistory(id);
+}
+
+async function deletePhoto(id) {
+  if (!confirm('Permanently delete this photo, its full-size file, and its thumbnail? If published, it will disappear from the gallery; the gallery link and email history will remain.')) return false;
+  try {
+    await api(`/api/photos/${id}`, { method: 'DELETE' });
+    toast('Photo deleted.', 'good');
+    await Promise.all([loadStats(), loadStudents()]);
+    return true;
+  } catch (err) {
+    toast(err.message, 'bad');
+    return false;
+  }
 }
 
 async function loadGalleryEmailHistory(id) {
@@ -604,6 +643,10 @@ $('#galleryStrip').addEventListener('click', async (e) => {
   const btn = e.target.closest('button[data-act]');
   if (!btn) return;
   const id = btn.closest('.shot-card').dataset.id;
+  if (btn.dataset.act === 'delete') {
+    if (await deletePhoto(id)) await openGallery($('#galleryStudent').value);
+    return;
+  }
   if (btn.dataset.act === 'toggle') {
     await api(`/api/photos/${id}/hide`, { method: 'POST', body: { hidden: btn.dataset.hidden !== 'true' } });
     openGallery($('#galleryStudent').value);

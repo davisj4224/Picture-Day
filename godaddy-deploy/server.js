@@ -646,6 +646,38 @@ app.get('/api/batches', requireStaff, (req, res) =>
   )
 );
 
+function photoFilePath(directory, filename) {
+  const basename = path.basename(filename || '');
+  if (!basename || basename !== filename) throw new Error('Invalid stored photo filename.');
+  return path.join(directory, basename);
+}
+
+async function removePhotoFiles(photos) {
+  for (const photo of photos) {
+    await fs.promises.rm(photoFilePath(UP_FULL, photo.file), { force: true });
+    if (photo.thumb) await fs.promises.rm(photoFilePath(UP_THUMB, photo.thumb), { force: true });
+  }
+}
+
+app.delete(
+  '/api/batches/:id',
+  requireStaff,
+  ok(async (req, res) => {
+    const batchId = Number(req.params.id);
+    if (!Number.isSafeInteger(batchId) || batchId < 1) return res.status(400).json({ error: 'Invalid batch ID.' });
+    const batch = db.prepare('SELECT id FROM batches WHERE id = ?').get(batchId);
+    if (!batch) return res.status(404).json({ error: 'Batch not found.' });
+
+    const photos = db.prepare('SELECT file, thumb FROM photos WHERE batch_id = ?').all(batchId);
+    await removePhotoFiles(photos);
+    db.transaction(() => {
+      db.prepare('DELETE FROM photos WHERE batch_id = ?').run(batchId);
+      db.prepare('DELETE FROM batches WHERE id = ?').run(batchId);
+    })();
+    res.json({ ok: true, deletedPhotos: photos.length });
+  })
+);
+
 app.post(
   '/api/upload',
   requireStaff,
@@ -798,11 +830,10 @@ app.post(
 app.delete(
   '/api/photos/:id',
   requireStaff,
-  ok((req, res) => {
+  ok(async (req, res) => {
     const p = db.prepare('SELECT * FROM photos WHERE id = ?').get(req.params.id);
     if (p) {
-      fs.rm(path.join(UP_FULL, p.file), () => {});
-      if (p.thumb) fs.rm(path.join(UP_THUMB, p.thumb), () => {});
+      await removePhotoFiles([p]);
       db.prepare('DELETE FROM photos WHERE id = ?').run(p.id);
     }
     res.json({ ok: true });

@@ -199,6 +199,7 @@ tr:hover td { background: #fafbfa; }
 .shot-card { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: #fff; }
 .shot-card img { display: block; width: 100%; aspect-ratio: 3 / 4; object-fit: cover; background: #e9ede9; cursor: zoom-in; }
 .shot-card .bar { display: flex; gap: 4px; padding: 6px; align-items: center; justify-content: space-between; font-size: 0.78rem; color: var(--muted); }
+.shot-card .photo-actions { flex-wrap: wrap; justify-content: flex-start; }
 .shot-card.is-hidden img { opacity: 0.35; }
 
 .lightbox { position: fixed; inset: 0; background: rgba(12, 18, 24, 0.9); display: none; align-items: center; justify-content: center; z-index: 60; padding: 24px; }
