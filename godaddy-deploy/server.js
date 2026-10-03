@@ -16,6 +16,19 @@ const QRCode = require('qrcode');
 const { parse: parseCsv } = require('csv-parse/sync');
 
 const { db, config, branding, setSetting, newQrCode, newGalleryToken, DEFAULT_BRANDING } = require('./lib/db.js');
+const {
+  DB_PATH,
+  UP_FULL,
+  UP_THUMB,
+  UP_BRAND,
+  LEGACY_DB_PATH,
+  LEGACY_UP_FULL,
+  LEGACY_UP_THUMB,
+  LEGACY_UP_BRAND,
+  MIGRATION_TARGET_ROOT,
+  PD_STORAGE_ROOT
+} = require('./lib/storage.js');
+const { StorageMigrationError, migrationStatus, migrateLegacyStorage } = require('./lib/storage-migration.js');
 const cards = require('./lib/cards.js');
 const mail = require('./lib/mail.js');
 
@@ -23,6 +36,9 @@ const mail = require('./lib/mail.js');
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
+let storageMigrationInProgress = false;
+let activeMutationRequests = 0;
+let mutationDrainWaiters = [];
 
 /*
  * Persistent SQLite-backed session store.
@@ -122,9 +138,6 @@ class SqliteSessionStore extends session.Store {
 }
 const ROOT = __dirname;
 const VIEWS = path.join(ROOT, 'views');
-const UP_FULL = path.join(ROOT, 'uploads', 'full');
-const UP_THUMB = path.join(ROOT, 'uploads', 'thumb');
-const UP_BRAND = path.join(ROOT, 'uploads', 'brand');
 [UP_FULL, UP_THUMB, UP_BRAND].forEach((d) => fs.mkdirSync(d, { recursive: true }));
 
 /* ------------------------------------------------------------ middleware */
@@ -189,6 +202,41 @@ app.use((req, res, next) => {
   return res.status(403).json({ error: 'Your session expired. Reload the page and sign in again.' });
 });
 
+app.use((req, res, next) => {
+  const mutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method);
+  if (!mutating || req.path === '/api/storage/migrate') return next();
+  if (storageMigrationInProgress) {
+    return res.status(503).json({ error: 'Storage migration is in progress. Try again shortly.' });
+  }
+
+  activeMutationRequests++;
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    activeMutationRequests--;
+    if (!activeMutationRequests) mutationDrainWaiters.splice(0).forEach((resolve) => resolve());
+  };
+  res.once('finish', release);
+  res.once('close', release);
+  next();
+});
+
+function waitForMutationDrain(timeoutMs = 30000) {
+  if (!activeMutationRequests) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const onDrain = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      mutationDrainWaiters = mutationDrainWaiters.filter((waiter) => waiter !== onDrain);
+      resolve(false);
+    }, timeoutMs);
+    mutationDrainWaiters.push(onDrain);
+  });
+}
+
 const loginLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
   limit: 20,
@@ -230,6 +278,51 @@ function requireUser(req, res, next) {
 }
 
 const ok = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+app.get('/api/storage/migration-status', requireAdmin, ok(async (req, res) => {
+  if (storageMigrationInProgress) {
+    return res.status(503).json({ error: 'Storage migration is in progress. Try again shortly.' });
+  }
+  res.json(await migrationStatus({
+    legacyDbPath: LEGACY_DB_PATH,
+    legacyDirectories: { full: LEGACY_UP_FULL, thumb: LEGACY_UP_THUMB, brand: LEGACY_UP_BRAND },
+    privateRoot: MIGRATION_TARGET_ROOT,
+    activeDatabase: PD_STORAGE_ROOT ? null : db,
+    activeDatabasePath: PD_STORAGE_ROOT ? null : DB_PATH
+  }));
+}));
+
+app.post('/api/storage/migrate', requireAdmin, async (req, res, next) => {
+  if (PD_STORAGE_ROOT) {
+    return res.status(409).json({ error: 'Migration is only available before PD_STORAGE_ROOT is enabled.' });
+  }
+  if (req.body?.confirm !== 'MIGRATE_LEGACY_STORAGE') {
+    return res.status(400).json({ error: 'Explicit confirmation is required: MIGRATE_LEGACY_STORAGE.' });
+  }
+  if (storageMigrationInProgress) return res.status(409).json({ error: 'A storage migration is already in progress.' });
+
+  storageMigrationInProgress = true;
+  try {
+    if (!await waitForMutationDrain()) {
+      return res.status(503).json({ error: 'Could not drain active writes before migration; no migration was started.' });
+    }
+    const result = await migrateLegacyStorage({
+      sourceDatabase: db,
+      sourceDbPath: LEGACY_DB_PATH,
+      sourceDirectories: { full: LEGACY_UP_FULL, thumb: LEGACY_UP_THUMB, brand: LEGACY_UP_BRAND },
+      privateRoot: MIGRATION_TARGET_ROOT,
+      overwriteDatabase: req.body?.overwriteDatabase === true
+    });
+    res.json(result);
+  } catch (err) {
+    if (err instanceof StorageMigrationError) {
+      return res.status(err.statusCode).json({ error: err.message, details: err.details });
+    }
+    return next(err);
+  } finally {
+    storageMigrationInProgress = false;
+  }
+});
 
 /* ---------------------------------------------------------------- pages */
 
