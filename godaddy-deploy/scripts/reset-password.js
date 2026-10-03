@@ -2,7 +2,6 @@
      npm run reset-password -- username newpassword          */
 
 const bcrypt = require('bcryptjs');
-require('dotenv').config();
 const { db } = require('../lib/db');
 
 const [username, password] = process.argv.slice(2);

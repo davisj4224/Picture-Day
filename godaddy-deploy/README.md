@@ -45,14 +45,15 @@ back into this screen afterwards — if you forget the password, run
 
 ## Deploying This Copy to GoDaddy
 
-This application requires GoDaddy **Node.js Hosting**. GoDaddy domain-only and
-static Website Builder plans cannot run it.
+This application requires GoDaddy hosting with **Setup Node.js App** or
+**Application Manager** in cPanel. GoDaddy domain-only and static Website
+Builder plans cannot run it.
 
 This directory is the deployable copy tracked in the GitHub repository. In
-GoDaddy's Node.js application settings, set the application root to the
-checkout's `godaddy-deploy` directory. Use Node 18 or newer, set the startup
-file to `server.js`, install production dependencies in that directory, then
-restart the application after publishing a reviewed code update.
+cPanel, check out the repository with Git Version Control and set the Node.js
+application root to the checkout's `godaddy-deploy` directory. Use Node 18 or
+newer, set the startup file to `server.js`, install production dependencies in
+that directory, then restart the application after pulling a new commit.
 
 Set `NODE_ENV=production`, `SECURE_COOKIES=true`, and a long random
 `SESSION_SECRET` in the application's environment variables. Do not commit or
@@ -63,28 +64,6 @@ updating an existing GoDaddy install, preserve its `data/`, `uploads/full/`, and
 `uploads/thumb/` directories. Do not complete first-time setup on an install
 that already has staff accounts. The branded files in `uploads/brand/` are
 included with this copy.
-
-### Persistent storage migration
-
-GoDaddy Node.js Hosting Private Storage is configured separately from the app
-source. The app supports `PD_STORAGE_ROOT=/private/picture-day`; the database
-and `uploads/full/`, `uploads/thumb/`, and `uploads/brand/` are stored beneath
-that root. Keep `PD_STORAGE_ROOT` unset until the legacy data has been migrated
-and reviewed. With the variable set, the app refuses to start if the expected
-database is missing or does not have the existing Picture Day tables; it does
-not fall back to or create a new database.
-
-Before cutover, sign in as an administrator while the app is still using the
-legacy layout and inspect `GET /api/storage/migration-status`. The protected
-`POST /api/storage/migrate` endpoint requires the JSON confirmation value
-`{"confirm":"MIGRATE_LEGACY_STORAGE"}`. It uses SQLite's backup API, verifies
-the staged database and referenced uploads, preserves the legacy source, and
-returns a migration report. If a private database already exists, the default
-is to refuse; overwriting requires the additional explicit JSON field
-`"overwriteDatabase":true`, and the prior private database is archived first.
-Migration does not change the app's active paths. Review the returned report,
-then deliberately set `PD_STORAGE_ROOT=/private/picture-day` in the Node
-application environment for cutover.
 
 In Admin → Settings, set **Address families will use** to
 `https://calcharterpicts.org` so gallery links point to the live site.

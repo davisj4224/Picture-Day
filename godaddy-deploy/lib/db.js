@@ -1,43 +1,14 @@
 'use strict';
 
+const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const Database = require('better-sqlite3');
-const { DATA_DIR, DB_PATH, PD_STORAGE_ROOT } = require('./storage.js');
 
-if (PD_STORAGE_ROOT) {
-  let databaseStat;
-  try {
-    databaseStat = fs.statSync(DB_PATH);
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      throw new Error(`PD_STORAGE_ROOT is set, but the migrated database is missing: ${DB_PATH}`);
-    }
-    throw err;
-  }
-  if (!databaseStat.isFile()) {
-    throw new Error(`PD_STORAGE_ROOT database path is not a file: ${DB_PATH}`);
-  }
-  let validationDb;
-  let missingTables;
-  try {
-    validationDb = new Database(DB_PATH, { readonly: true, fileMustExist: true });
-    const tables = new Set(validationDb.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => row.name));
-    missingTables = ['users', 'students', 'photos', 'batches', 'settings', 'gallery_email_attempts', 'email_log']
-      .filter((table) => !tables.has(table));
-  } catch (err) {
-    throw new Error(`PD_STORAGE_ROOT database could not be validated; refusing startup: ${DB_PATH} (${err.message})`);
-  } finally {
-    if (validationDb?.open) validationDb.close();
-  }
-  if (missingTables.length) {
-    throw new Error(`PD_STORAGE_ROOT database is missing expected tables; refusing startup: ${missingTables.join(', ')}`);
-  }
-} else {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
+const DATA_DIR = path.join(__dirname, '..', 'data');
+fs.mkdirSync(DATA_DIR, { recursive: true });
 
-const db = new Database(DB_PATH, { fileMustExist: Boolean(PD_STORAGE_ROOT) });
+const db = new Database(path.join(DATA_DIR, 'pictureday.db'));
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
@@ -272,7 +243,6 @@ function newGalleryToken() {
 module.exports = {
   db,
   DATA_DIR,
-  DB_PATH,
   getSetting,
   setSetting,
   config,

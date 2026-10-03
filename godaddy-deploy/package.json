@@ -7,7 +7,6 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test",
     "reset-password": "node scripts/reset-password.js"
   },
   "engines": {
