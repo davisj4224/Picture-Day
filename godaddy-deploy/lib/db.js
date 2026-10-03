@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
-const mysql = require('mysql2/promise');
+const mysql = require('mysql2');
 
 const REQUIRED_TABLES = [
   'users',
@@ -44,7 +44,7 @@ const pool = mysql.createPool({
   supportBigNumbers: false,
   decimalNumbers: true,
   charset: 'utf8mb4'
-});
+}).promise();
 
 function normalizeSql(sql) {
   return sql.replace(/@([a-zA-Z_][a-zA-Z0-9_]*)/g, ':$1');
