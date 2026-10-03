@@ -24,20 +24,20 @@ const REQUIRED_COLUMNS = {
   sessions: ['sid', 'sess', 'expires_at']
 };
 
-const requiredEnv = ['MYSQL_HOST', 'MYSQL_USER', 'MYSQL_PASSWORD', 'MYSQL_DATABASE'];
+const requiredEnv = ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME'];
 const missingEnv = requiredEnv.filter((key) => !process.env[key]);
 if (missingEnv.length) {
-  throw new Error(`MySQL configuration is incomplete. Set: ${missingEnv.join(', ')}.`);
+  throw new Error(`GoDaddy hosted database configuration is incomplete. Set: ${missingEnv.join(', ')}.`);
 }
 
 const pool = mysql.createPool({
-  host: process.env.MYSQL_HOST,
-  port: Number(process.env.MYSQL_PORT || 3306),
-  user: process.env.MYSQL_USER,
-  password: process.env.MYSQL_PASSWORD,
-  database: process.env.MYSQL_DATABASE,
+  host: process.env.DB_HOST,
+  port: Number(process.env.DB_PORT || 3306),
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
   waitForConnections: true,
-  connectionLimit: Number(process.env.MYSQL_CONNECTION_LIMIT || 10),
+  connectionLimit: 10,
   queueLimit: 0,
   connectTimeout: 10000,
   namedPlaceholders: true,
@@ -86,12 +86,12 @@ const db = {
     const [tables] = await pool.execute(
       `SELECT TABLE_NAME AS name FROM information_schema.tables
        WHERE table_schema = ? AND table_type = 'BASE TABLE'`,
-      [process.env.MYSQL_DATABASE]
+      [process.env.DB_NAME]
     );
     const [columns] = await pool.execute(
       `SELECT TABLE_NAME AS table_name, COLUMN_NAME AS column_name
        FROM information_schema.columns WHERE table_schema = ?`,
-      [process.env.MYSQL_DATABASE]
+      [process.env.DB_NAME]
     );
     const names = new Set(tables.map((row) => row.name));
     const availableColumns = new Map();
@@ -229,7 +229,7 @@ async function initialize() {
   const [passwordColumn] = await pool.execute(
     `SELECT 1 FROM information_schema.columns
      WHERE table_schema = ? AND table_name = 'users' AND column_name = 'must_change_password'`,
-    [process.env.MYSQL_DATABASE]
+    [process.env.DB_NAME]
   );
   if (!passwordColumn.length) {
     await pool.query(

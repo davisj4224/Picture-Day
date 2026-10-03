@@ -32,8 +32,9 @@ cp .env.example .env
 node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
 ```
 
-Configure `SESSION_SECRET` and the four required `MYSQL_*` connection values in `.env`
-for local development. The app creates its tables additively on first startup;
+Configure `SESSION_SECRET` and the GoDaddy `DB_HOST`, `DB_PORT`, `DB_NAME`,
+`DB_USER`, and `DB_PASSWORD` connection values in `.env` for local development.
+The app creates its tables additively on first startup;
 it never seeds, resets, or deletes application data. Then:
 
 ```bash
@@ -72,15 +73,15 @@ read a deployed `.env` file.
 | `NODE_ENV` | `production` |
 | `SESSION_SECRET` | A unique random secret; generate with `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` |
 | `SECURE_COOKIES` | `true` (the production site is HTTPS) |
-| `MYSQL_HOST` | The database host shown in GoDaddy/cPanel MySQL settings |
-| `MYSQL_PORT` | GoDaddy MySQL port, usually `3306` |
-| `MYSQL_DATABASE` | The exact managed database name |
-| `MYSQL_USER` | The MySQL user assigned to that database |
-| `MYSQL_PASSWORD` | That MySQL user's password |
+| `DB_HOST` | Automatically injected by GoDaddy |
+| `DB_PORT` | Automatically injected by GoDaddy |
+| `DB_NAME` | Automatically injected by GoDaddy |
+| `DB_USER` | Automatically injected by GoDaddy |
+| `DB_PASSWORD` | Automatically injected by GoDaddy |
 | `PICTUREDAY_ASSET_DIR` | Optional absolute path of GoDaddy's persistent public/assets `pictureday` root, if its mount differs from the default application path |
 
 Keep credentials in the hosting environment settings, never in source control.
-Use the GoDaddy-provided host/database/user values exactly; the app has no
+GoDaddy injects the database connection values; the app has no
 SQLite fallback and exits with a clear startup error if MySQL is unavailable.
 The app uses this configured database and `CREATE TABLE IF NOT EXISTS` for its
 first-run schema. Existing tables and records are never dropped or reseeded.
@@ -140,9 +141,9 @@ Do not treat a code deployment as a backup or as an asset migration.
 
 `npm test` always checks the additive schema contract, private-photo route
 guards, and removal of SQLite/debug startup paths. Its MySQL integration test
-is skipped unless `MYSQL_TEST_DATABASE` names a separate database containing
-`test` (for example, `pictureday_test`) and the MySQL host/user/password are
-configured. Run that integration test only with a disposable, non-production
+is skipped unless `DB_TEST_NAME` names a separate database containing
+`test` (for example, `pictureday_test`) and the GoDaddy-style DB connection
+values are configured in the test environment. Run that integration test only with a disposable, non-production
 database: it creates uniquely named fixture records and verifies that schema
 re-initialization preserves users, students, settings, batches, photos, gallery
 tokens, email history, and uploaded-file references, then checks photo and

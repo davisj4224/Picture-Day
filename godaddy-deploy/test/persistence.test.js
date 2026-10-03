@@ -36,15 +36,15 @@ test('private photo files are guarded from static access and keep route-based ac
   assert.doesNotMatch(serverSource, /\/api\/debug\/storage-check-7f3a9c/);
 });
 
-const testDatabase = process.env.MYSQL_TEST_DATABASE || '';
+const testDatabase = process.env.DB_TEST_NAME || '';
 const safeDedicatedDatabase = /(^|_)test($|_)/i.test(testDatabase);
 const integrationReady = safeDedicatedDatabase &&
-  ['MYSQL_HOST', 'MYSQL_USER', 'MYSQL_PASSWORD'].every((name) => Boolean(process.env[name]));
+  ['DB_HOST', 'DB_USER', 'DB_PASSWORD'].every((name) => Boolean(process.env[name]));
 
 test('MySQL state and file references survive schema re-initialization', {
-  skip: integrationReady ? false : 'Set MYSQL_TEST_DATABASE to a dedicated database whose name contains "_test" and configure MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD.'
+  skip: integrationReady ? false : 'Set DB_TEST_NAME to a dedicated database whose name contains "_test" and configure DB_HOST, DB_USER, DB_PASSWORD.'
 }, async () => {
-  process.env.MYSQL_DATABASE = testDatabase;
+  process.env.DB_NAME = testDatabase;
   const assetRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pictureday-mysql-test-'));
   process.env.PICTUREDAY_ASSET_DIR = assetRoot;
   const assetPaths = ['full', 'thumb', 'brand'].map((name) => path.join(assetRoot, name));
