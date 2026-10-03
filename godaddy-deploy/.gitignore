@@ -1,9 +1,11 @@
 node_modules/
 .env
 data/
-uploads/full/*
-uploads/thumb/*
-uploads/brand/*
-!uploads/**/.gitkeep
+public/assets/pictureday/full/*
+!public/assets/pictureday/full/.gitkeep
+public/assets/pictureday/thumb/*
+!public/assets/pictureday/thumb/.gitkeep
+public/assets/pictureday/brand/*
+!public/assets/pictureday/brand/.gitkeep
 .DS_Store
 npm-debug.log*

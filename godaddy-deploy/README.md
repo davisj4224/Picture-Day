@@ -23,7 +23,7 @@ two never touch.
 
 ## Running it the first time
 
-You need [Node.js](https://nodejs.org) 18.17 or newer. Check with `node -v`.
+You need Node.js 22 and a MySQL 8-compatible database.
 
 ```bash
 cd godaddy-deploy
@@ -32,7 +32,9 @@ cp .env.example .env
 node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
 ```
 
-Paste that random string into `.env` as `SESSION_SECRET`, then:
+Configure `SESSION_SECRET` and the four required `MYSQL_*` connection values in `.env`
+for local development. The app creates its tables additively on first startup;
+it never seeds, resets, or deletes application data. Then:
 
 ```bash
 npm start
@@ -51,25 +53,101 @@ Builder plans cannot run it.
 
 This directory is the deployable copy tracked in the GitHub repository. In
 cPanel, check out the repository with Git Version Control and set the Node.js
-application root to the checkout's `godaddy-deploy` directory. Use Node 18 or
-newer, set the startup file to `server.js`, install production dependencies in
+application root to the checkout's `godaddy-deploy` directory. Use Node 22,
+set the startup file to `server.js`, install production dependencies in
 that directory, then restart the application after pulling a new commit.
 
 Set `NODE_ENV=production`, `SECURE_COOKIES=true`, and a long random
 `SESSION_SECRET` in the application's environment variables. Do not commit or
 upload `.env`.
 
-This copy intentionally excludes the local database and student photos. When
-updating an existing GoDaddy install, preserve its `data/`, `uploads/full/`, and
-`uploads/thumb/` directories. Do not complete first-time setup on an install
-that already has staff accounts. The branded files in `uploads/brand/` are
-included with this copy.
+### Required GoDaddy application environment variables
 
-In Admin → Settings, set **Address families will use** to
-`https://calcharterpicts.org` so gallery links point to the live site.
+Set these under cPanel **Setup Node.js App → Environment variables** (or the
+equivalent GoDaddy Node.js application settings). Production does not need or
+read a deployed `.env` file.
 
-The application must be able to write to `data/` and `uploads/`. Back up both
-locations because they contain the database and uploaded photographs.
+| Variable | Configure as |
+| --- | --- |
+| `NODE_ENV` | `production` |
+| `SESSION_SECRET` | A unique random secret; generate with `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` |
+| `SECURE_COOKIES` | `true` (the production site is HTTPS) |
+| `MYSQL_HOST` | The database host shown in GoDaddy/cPanel MySQL settings |
+| `MYSQL_PORT` | GoDaddy MySQL port, usually `3306` |
+| `MYSQL_DATABASE` | The exact managed database name |
+| `MYSQL_USER` | The MySQL user assigned to that database |
+| `MYSQL_PASSWORD` | That MySQL user's password |
+| `PICTUREDAY_ASSET_DIR` | Optional absolute path of GoDaddy's persistent public/assets `pictureday` root, if its mount differs from the default application path |
+
+Keep credentials in the hosting environment settings, never in source control.
+Use the GoDaddy-provided host/database/user values exactly; the app has no
+SQLite fallback and exits with a clear startup error if MySQL is unavailable.
+The app uses this configured database and `CREATE TABLE IF NOT EXISTS` for its
+first-run schema. Existing tables and records are never dropped or reseeded.
+
+### Persistent uploaded files
+
+Configure the GoDaddy-supported persistent public/assets storage so the app
+can write these directories:
+
+```
+public/assets/pictureday/full/
+public/assets/pictureday/thumb/
+public/assets/pictureday/brand/
+```
+
+If GoDaddy mounts persistent assets elsewhere, set `PICTUREDAY_ASSET_DIR` to
+the absolute path of the `pictureday` root that contains `full`, `thumb`, and
+`brand`. Give the Node.js application user read/write permission. Uploaded
+student photos are not exposed as unrestricted static assets: staff endpoints
+and the existing expiring gallery-token route serve them. Brand images continue
+to use the existing `/brand/<filename>` URL.
+
+### First Preview deployment and persistence check
+
+1. Create/select the GoDaddy managed MySQL database and user. Give the user full
+   privileges on that database. Do not point Preview at a production database
+   or delete/recreate any database to test this code.
+2. Configure the environment variables above and persistent asset directories,
+   then restart the Preview Node.js app. On an empty MySQL database, startup
+   creates the schema and `/setup` lets you create the first administrator.
+   Existing administrators/data remain in place on later restarts.
+3. Sign in as the administrator and open
+   `/api/admin/database-health`. It requires an authenticated administrator;
+   `database: "connected"` and `schemaReady: true` confirm connectivity and all
+   required tables. The response does not include connection details or users.
+4. Add a throwaway student and batch, upload a test image, and verify its
+   staff/gallery routes work. Restart Preview and confirm the account, student,
+   batch, photo, settings, and published gallery remain. Remove the throwaway
+   records and files in the app before loading the real roster.
+5. In Admin → Settings, set **Address families will use** to
+   `https://calcharterpicts.org`; gallery email links use the saved `publicUrl`
+   with the same `/g/<token>` path as before.
+
+The old SQLite database is intentionally not migrated or read. Reload students
+and staff rosters into the newly configured MySQL-backed app.
+
+### Backups and restores
+
+Back up the GoDaddy MySQL database and all three persistent asset directories
+together, encrypted and on a schedule. Test restoring both database and files
+to a separate Preview database/storage location. Photo rows contain filenames,
+not absolute paths, so restore the files under matching `full`, `thumb`, and
+`brand` directories. Preserve database and asset backups as a matched set.
+Do not treat a code deployment as a backup or as an asset migration.
+
+### Persistence test
+
+`npm test` always checks the additive schema contract, private-photo route
+guards, and removal of SQLite/debug startup paths. Its MySQL integration test
+is skipped unless `MYSQL_TEST_DATABASE` names a separate database containing
+`test` (for example, `pictureday_test`) and the MySQL host/user/password are
+configured. Run that integration test only with a disposable, non-production
+database: it creates uniquely named fixture records and verifies that schema
+re-initialization preserves users, students, settings, batches, photos, gallery
+tokens, email history, and uploaded-file references, then checks photo and
+batch deletion behavior. Never point this test at the live or Preview database
+containing real data.
 
 **Editing the site:** open the whole `school-picture-day` folder in VS Code
 (File → Open Folder). The look of the parent-facing pages lives in
@@ -191,9 +269,11 @@ the server is reachable from outside the building.
 - [ ] **HTTPS, always.** Put nginx, Caddy, or the district's reverse proxy in
       front of it with a real certificate, then set `SECURE_COOKIES=true`.
       Gallery links travel through email; they must not travel over plain HTTP.
-- [ ] **Real `SESSION_SECRET`** in `.env`, and `.env` never committed to git.
-- [ ] **Backups.** Everything lives in `data/pictureday.db` and `uploads/`.
-      Back up both, encrypted, and test restoring once before picture day.
+- [ ] **Real `SESSION_SECRET`** in the GoDaddy environment settings; never
+      commit secrets or rely on a production `.env`.
+- [ ] **Backups.** Back up the GoDaddy MySQL database and persistent
+      `public/assets/pictureday/` directories together, encrypted, and test a
+      restore before picture day.
 - [ ] **Retention.** Decide now when photos get deleted, write it down, and
       actually do it. Expiry closes links; it does not delete files.
 - [ ] **Opt-outs.** Mark those students inactive before you print cards, or do
@@ -201,9 +281,8 @@ the server is reachable from outside the building.
 - [ ] **Least access.** One staff account per person who genuinely needs it.
       Do not share a login. Do not let the design password near the roster.
 - [ ] **Keep it patched.** `npm audit` occasionally, and update Node.
-- [ ] **Sessions are in memory.** Restarting the server signs everyone out.
-      For a busy multi-user install, move to a session store backed by the
-      database.
+- [ ] **Uploaded files are private.** Student photographs are returned only
+      through authenticated staff and token-authorized gallery routes.
 - [ ] **Uploads are trusted input.** Only signed-in staff can upload, and only
       images are accepted, but the files are served back to browsers — keep the
       server behind your firewall if you can.
@@ -231,8 +310,8 @@ school-picture-day/
 │   ├── qr-scan.js         in-browser QR reading + thumbnails
 │   ├── admin.js  design.js  common.js
 │   └── vendor/            optional offline jsQR
-├── data/                  SQLite database (git-ignored)
-├── uploads/               photographs and brand images (git-ignored)
+├── public/assets/pictureday/ persistent uploaded files (git-ignored except bundled brand assets)
+├── lib/db.js              GoDaddy MySQL schema, settings, code generation
 └── sample-roster.csv
 ```
 

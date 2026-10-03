@@ -15,7 +15,7 @@ const bcrypt = require('bcryptjs');
 const QRCode = require('qrcode');
 const { parse: parseCsv } = require('csv-parse/sync');
 
-const { db, DATA_DIR, config, branding, setSetting, newQrCode, newGalleryToken, DEFAULT_BRANDING } = require('./lib/db.js');
+const { db, initialize, config, branding, setSetting, newQrCode, newGalleryToken, DEFAULT_BRANDING } = require('./lib/db.js');
 const cards = require('./lib/cards.js');
 const mail = require('./lib/mail.js');
 
@@ -25,106 +25,61 @@ const app = express();
 const PORT = Number(process.env.PORT || 3000);
 
 /*
- * Persistent SQLite-backed session store.
+ * Persistent MySQL-backed session store.
  * This keeps staff sessions across Node process restarts.
  */
-class SqliteSessionStore extends session.Store {
-  constructor(database) {
-    super();
-    this.db = database;
-
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS sessions (
-        sid         TEXT PRIMARY KEY,
-        sess        TEXT NOT NULL,
-        expires_at  INTEGER
-      );
-      CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
-    `);
-
-    this.db.prepare(
-      'DELETE FROM sessions WHERE expires_at IS NOT NULL AND expires_at <= ?'
-    ).run(Date.now());
-  }
-
+class MySqlSessionStore extends session.Store {
   get(sid, callback) {
-    try {
-      const row = this.db.prepare(
-        'SELECT sess, expires_at FROM sessions WHERE sid = ?'
-      ).get(sid);
-
+    db.prepare('SELECT sess, expires_at FROM sessions WHERE sid = ?').get(sid).then(async (row) => {
       if (!row) return callback(null, null);
-
       if (row.expires_at && row.expires_at <= Date.now()) {
-        this.db.prepare('DELETE FROM sessions WHERE sid = ?').run(sid);
+        await db.prepare('DELETE FROM sessions WHERE sid = ?').run(sid);
         return callback(null, null);
       }
-
       callback(null, JSON.parse(row.sess));
-    } catch (err) {
-      callback(err);
-    }
+    }).catch(callback);
   }
 
   set(sid, sess, callback) {
-    try {
+    Promise.resolve().then(async () => {
       const expiresAt = sess.cookie?.expires
         ? new Date(sess.cookie.expires).getTime()
         : null;
-
-      this.db.prepare(`
+      await db.prepare(`
         INSERT INTO sessions (sid, sess, expires_at)
         VALUES (?, ?, ?)
-        ON CONFLICT(sid) DO UPDATE SET
-          sess = excluded.sess,
-          expires_at = excluded.expires_at
+        ON DUPLICATE KEY UPDATE sess = VALUES(sess), expires_at = VALUES(expires_at)
       `).run(sid, JSON.stringify(sess), expiresAt);
-
-      if (callback) callback(null);
-    } catch (err) {
-      if (callback) callback(err);
-    }
+    }).then(() => callback?.(null), (error) => callback?.(error));
   }
 
   destroy(sid, callback) {
-    try {
-      this.db.prepare('DELETE FROM sessions WHERE sid = ?').run(sid);
-      if (callback) callback(null);
-    } catch (err) {
-      if (callback) callback(err);
-    }
+    db.prepare('DELETE FROM sessions WHERE sid = ?').run(sid)
+      .then(() => callback?.(null), (error) => callback?.(error));
   }
 
   touch(sid, sess, callback) {
-    try {
+    Promise.resolve().then(async () => {
       const expiresAt = sess.cookie?.expires
         ? new Date(sess.cookie.expires).getTime()
         : null;
-
-      this.db.prepare(
+      await db.prepare(
         'UPDATE sessions SET expires_at = ? WHERE sid = ?'
       ).run(expiresAt, sid);
-
-      if (callback) callback(null);
-    } catch (err) {
-      if (callback) callback(err);
-    }
+    }).then(() => callback?.(null), (error) => callback?.(error));
   }
 
   clear(callback) {
-    try {
-      this.db.prepare('DELETE FROM sessions').run();
-      if (callback) callback(null);
-    } catch (err) {
-      if (callback) callback(err);
-    }
+    db.prepare('DELETE FROM sessions').run()
+      .then(() => callback?.(null), (error) => callback?.(error));
   }
 }
 const ROOT = __dirname;
 const VIEWS = path.join(ROOT, 'views');
-const UP_FULL = path.join(ROOT, 'uploads', 'full');
-const UP_THUMB = path.join(ROOT, 'uploads', 'thumb');
-const UP_BRAND = path.join(ROOT, 'uploads', 'brand');
+const ASSET_ROOT = path.resolve(process.env.PICTUREDAY_ASSET_DIR || path.join(ROOT, 'public', 'assets', 'pictureday'));
+const UP_FULL = path.join(ASSET_ROOT, 'full');
+const UP_THUMB = path.join(ASSET_ROOT, 'thumb');
+const UP_BRAND = path.join(ASSET_ROOT, 'brand');
 [UP_FULL, UP_THUMB, UP_BRAND].forEach((d) => fs.mkdirSync(d, { recursive: true }));
 
 /* ------------------------------------------------------------ middleware */
@@ -157,16 +112,13 @@ app.use((req, res, next) => {
   next();
 });
 
-if (!process.env.SESSION_SECRET) {
-  console.warn('\n  ⚠  SESSION_SECRET is not set in .env — using a temporary one.');
-  console.warn('     Everyone will be logged out whenever the server restarts.\n');
-}
+if (!process.env.SESSION_SECRET) throw new Error('SESSION_SECRET must be configured before starting the application.');
 
 app.use(
   session({
-    store: new SqliteSessionStore(db),
+    store: new MySqlSessionStore(),
     name: 'pd.sid',
-    secret: process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex'),
+    secret: process.env.SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
     rolling: true,
@@ -200,7 +152,7 @@ const loginLimiter = rateLimit({
 const galleryLimiter = rateLimit({ windowMs: 60 * 1000, limit: 300, standardHeaders: true, legacyHeaders: false });
 
 function userCount() {
-  return db.prepare('SELECT COUNT(*) n FROM users').get().n;
+  return db.prepare('SELECT COUNT(*) n FROM users').get().then((row) => Number(row.n));
 }
 const isStaff = (req) => ['staff', 'admin'].includes(req.session?.user?.role);
 const isAdmin = (req) => req.session?.user?.role === 'admin';
@@ -235,17 +187,27 @@ const ok = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch
 
 const page = (name) => (req, res) => res.sendFile(path.join(VIEWS, name));
 
-app.get('/', (req, res, next) => {
-  if (userCount() === 0) return res.sendFile(path.join(VIEWS, 'setup.html'));
+app.get('/', ok(async (req, res, next) => {
+  if (await userCount() === 0) return res.sendFile(path.join(VIEWS, 'setup.html'));
   return page('index.html')(req, res, next);
-});
-app.get('/setup', (req, res) => (userCount() > 0 ? res.redirect('/login') : res.sendFile(path.join(VIEWS, 'setup.html'))));
-app.get('/login', (req, res) => (userCount() === 0 ? res.redirect('/setup') : res.sendFile(path.join(VIEWS, 'login.html'))));
+}));
+app.get('/setup', ok(async (req, res) => {
+  if (await userCount() > 0) return res.redirect('/login');
+  return res.sendFile(path.join(VIEWS, 'setup.html'));
+}));
+app.get('/login', ok(async (req, res) => {
+  if (await userCount() === 0) return res.redirect('/setup');
+  return res.sendFile(path.join(VIEWS, 'login.html'));
+}));
 app.get('/admin', requireStaff, page('admin.html'));
 app.get('/change-password', requireUser, page('change-password.html'));
 app.get('/design', requireUser, page('design.html'));
 app.get('/g/:token', page('gallery.html'));
 
+app.use((req, res, next) => {
+  if (/^\/assets\/pictureday\/(?:full|thumb)(?:\/|$)/.test(req.path)) return res.sendStatus(404);
+  next();
+});
 app.use('/assets', express.static(path.join(ROOT, 'public'), { maxAge: '1h' }));
 
 /* ----------------------------------------------------------------- auth */
@@ -253,20 +215,20 @@ app.use('/assets', express.static(path.join(ROOT, 'public'), { maxAge: '1h' }));
 app.post(
   '/api/setup',
   loginLimiter,
-  ok((req, res) => {
-    if (userCount() > 0) return res.status(403).json({ error: 'Setup has already been completed.' });
+  ok(async (req, res) => {
+    if (await userCount() > 0) return res.status(403).json({ error: 'Setup has already been completed.' });
     const { username, password, designPassword, schoolName } = req.body || {};
     if (!username || !password || password.length < 10)
       return res.status(400).json({ error: 'Staff password must be at least 10 characters.' });
     const now = Date.now();
     const ins = db.prepare('INSERT INTO users (username, password, role, created_at) VALUES (?,?,?,?)');
-    ins.run(String(username).trim().toLowerCase(), bcrypt.hashSync(password, 12), 'admin', now);
+    await ins.run(String(username).trim().toLowerCase(), bcrypt.hashSync(password, 12), 'admin', now);
     if (designPassword && designPassword.length >= 6)
-      ins.run('design', bcrypt.hashSync(designPassword, 12), 'designer', now);
+      await ins.run('design', bcrypt.hashSync(designPassword, 12), 'designer', now);
     if (schoolName) {
       const b = { ...DEFAULT_BRANDING, schoolName };
-      setSetting('branding_draft', b);
-      setSetting('branding_published', b);
+      await setSetting('branding_draft', b);
+      await setSetting('branding_published', b);
     }
     res.json({ ok: true });
   })
@@ -275,9 +237,9 @@ app.post(
 app.post(
   '/api/login',
   loginLimiter,
-  ok((req, res) => {
+  ok(async (req, res) => {
     const { username, password } = req.body || {};
-    const row = db.prepare('SELECT * FROM users WHERE username = ?').get(String(username || '').trim().toLowerCase());
+    const row = await db.prepare('SELECT * FROM users WHERE username = ?').get(String(username || '').trim().toLowerCase());
     if (!row || !bcrypt.compareSync(String(password || ''), row.password))
       return res.status(401).json({ error: 'That username and password do not match.' });
     req.session.regenerate((err) => {
@@ -290,14 +252,6 @@ app.post(
 );
 
 app.post('/api/logout', (req, res) => req.session.destroy(() => res.json({ ok: true })));
-app.use((req, res, next) => {
-  if (req.path === '/api/me') {
-    console.log('DEBUG /api/me cookie:', req.headers.cookie);
-    console.log('DEBUG /api/me sessionID:', req.sessionID);
-    console.log('DEBUG /api/me user:', req.session.user);
-  }
-  next();
-});
 app.get('/api/me', (req, res) =>
   res.json({
     user: req.session.user || null,
@@ -310,99 +264,46 @@ app.get('/api/me', (req, res) =>
 app.post(
   '/api/password',
   requireUser,
-  ok((req, res) => {
+  ok(async (req, res) => {
     const { current, next: nextPw } = req.body || {};
-    const row = db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.user.id);
+    const row = await db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.user.id);
     if (!row || !bcrypt.compareSync(String(current || ''), row.password))
       return res.status(401).json({ error: 'Current password is not right.' });
     if (!nextPw || nextPw.length < 10) return res.status(400).json({ error: 'New password must be at least 10 characters.' });
-    db.prepare('UPDATE users SET password = ?, must_change_password = 0 WHERE id = ?').run(bcrypt.hashSync(nextPw, 12), row.id);
+    await db.prepare('UPDATE users SET password = ?, must_change_password = 0 WHERE id = ?').run(bcrypt.hashSync(nextPw, 12), row.id);
     req.session.user.mustChangePassword = false;
     res.json({ ok: true, user: req.session.user, csrf: req.session.csrf });
   })
 );
 
-app.get('/api/staff-users', requireAdmin, (req, res) => {
-  const users = db.prepare("SELECT id, username FROM users WHERE role = 'staff' ORDER BY username").all();
+app.get('/api/staff-users', requireAdmin, ok(async (req, res) => {
+  const users = await db.prepare("SELECT id, username FROM users WHERE role = 'staff' ORDER BY username").all();
   res.json(users);
-});
+}));
 
-function inspectPath(targetPath) {
-  try {
-    const stats = fs.statSync(targetPath);
-    return {
-      exists: true,
-      isDirectory: stats.isDirectory(),
-      isFile: stats.isFile(),
-      sizeBytes: stats.isFile() ? stats.size : null
-    };
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      return { exists: false, isDirectory: false, isFile: false, sizeBytes: null };
-    }
-    throw err;
-  }
-}
-
-app.get('/api/debug/storage-check-7f3a9c', (req, res) => {
-  const databasePath = path.join(DATA_DIR, 'pictureday.db');
-  const database = inspectPath(databasePath);
-  const uploads = [
-    ['full', UP_FULL],
-    ['thumb', UP_THUMB],
-    ['brand', UP_BRAND]
-  ].map(([name, directory]) => {
-    const info = inspectPath(directory);
-    if (!info.isDirectory) {
-      return { name, path: directory, ...info, fileCount: null, representativeFiles: [] };
-    }
-
-    const files = fs.readdirSync(directory, { withFileTypes: true })
-      .filter((entry) => entry.isFile())
-      .sort((a, b) => a.name.localeCompare(b.name));
-
-    return {
-      name,
-      path: directory,
-      ...info,
-      fileCount: files.length,
-      representativeFiles: files.slice(0, 3).map((entry) => {
-        const filePath = path.join(directory, entry.name);
-        return { name: entry.name, sizeBytes: fs.statSync(filePath).size };
-      })
-    };
-  });
-
-  res.json({
-    processCwd: process.cwd(),
-    __dirname: ROOT,
-    database: {
-      path: databasePath,
-      ...database,
-      users: db.prepare('SELECT COUNT(*) AS count FROM users').get().count,
-      students: db.prepare('SELECT COUNT(*) AS count FROM students').get().count
-    },
-    uploads
-  });
-});
+app.get('/api/admin/database-health', requireAdmin, ok(async (req, res) => {
+  await db.ping();
+  const tables = await db.tableReadiness();
+  res.status(tables.ready ? 200 : 503).json({ database: 'connected', schemaReady: tables.ready, tables });
+}));
 
 app.post(
   '/api/staff-users',
   requireAdmin,
-  ok((req, res) => {
+  ok(async (req, res) => {
     const username = String(req.body?.username || '').trim().toLowerCase();
     const password = String(req.body?.password || '');
     if (!/^[a-z0-9._-]{3,32}$/.test(username)) {
       return res.status(400).json({ error: 'Username must be 3–32 characters: letters, numbers, dots, hyphens, or underscores.' });
     }
     if (password.length < 10) return res.status(400).json({ error: 'Password must be at least 10 characters.' });
-    if (db.prepare("SELECT COUNT(*) n FROM users WHERE role = 'staff'").get().n >= 5) {
+    if (Number((await db.prepare("SELECT COUNT(*) n FROM users WHERE role = 'staff'").get()).n) >= 5) {
       return res.status(400).json({ error: 'The limit of 5 staff accounts has been reached.' });
     }
-    if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) {
+    if (await db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) {
       return res.status(409).json({ error: 'That username is already in use.' });
     }
-    const result = db
+    const result = await db
       .prepare('INSERT INTO users (username, password, role, must_change_password, created_at) VALUES (?, ?, ?, ?, ?)')
 .run(username, bcrypt.hashSync(password, 12), 'staff', 1, Date.now());
     res.status(201).json({ id: result.lastInsertRowid, username });
@@ -412,14 +313,14 @@ app.post(
 app.delete(
   '/api/staff-users/:id',
   requireAdmin,
-  ok((req, res) => {
-    const user = db.prepare("SELECT id FROM users WHERE id = ? AND role = 'staff'").get(req.params.id);
+  ok(async (req, res) => {
+    const user = await db.prepare("SELECT id FROM users WHERE id = ? AND role = 'staff'").get(req.params.id);
     if (!user) return res.status(404).json({ error: 'Staff account not found.' });
     if (user.id === req.session.user.id) return res.status(400).json({ error: 'You cannot remove your own account.' });
-    if (db.prepare("SELECT COUNT(*) n FROM users WHERE role = 'staff'").get().n <= 1) {
+    if (Number((await db.prepare("SELECT COUNT(*) n FROM users WHERE role = 'staff'").get()).n) <= 1) {
       return res.status(400).json({ error: 'At least one staff account must remain.' });
     }
-    db.prepare('DELETE FROM users WHERE id = ?').run(user.id);
+    await db.prepare('DELETE FROM users WHERE id = ?').run(user.id);
     res.json({ ok: true });
   })
 );
@@ -431,11 +332,11 @@ app.get('/api/config', requireStaff, (req, res) => res.json(config()));
 app.put(
   '/api/config',
   requireStaff,
-  ok((req, res) => {
+  ok(async (req, res) => {
     const merged = { ...config(), ...(req.body || {}) };
     merged.galleryDays = Math.max(1, Math.min(365, Number(merged.galleryDays) || 45));
     merged.minPhotos = Math.max(1, Math.min(20, Number(merged.minPhotos) || 2));
-    setSetting('config', merged);
+    await setSetting('config', merged);
     res.json(merged);
   })
 );
@@ -467,10 +368,10 @@ const ROSTER_SQL = `
     (SELECT MAX(sent_at) FROM email_log e WHERE e.student_id = s.id AND e.status = 'sent') AS emailed_at
   FROM students s`;
 
-app.get('/api/students', requireStaff, (req, res) => {
-  const rows = db.prepare(`${ROSTER_SQL} ORDER BY s.last_name, s.first_name`).all();
+app.get('/api/students', requireStaff, ok(async (req, res) => {
+  const rows = await db.prepare(`${ROSTER_SQL} ORDER BY s.last_name, s.first_name`).all();
   res.json(rows.map(studentPublic));
-});
+}));
 
 function cleanStudent(body) {
   const t = (v) => (v === undefined || v === null ? null : String(v).trim() || null);
@@ -489,40 +390,40 @@ function cleanStudent(body) {
 app.post(
   '/api/students',
   requireStaff,
-  ok((req, res) => {
+  ok(async (req, res) => {
     const s = cleanStudent(req.body || {});
     if (!s.first_name || !s.last_name) return res.status(400).json({ error: 'First and last name are required.' });
-    const info = db
+    const info = await db
       .prepare(
         `INSERT INTO students (ext_id, first_name, last_name, grade, teacher, parent_email, parent_name, notes, qr_code, created_at)
          VALUES (@ext_id, @first_name, @last_name, @grade, @teacher, @parent_email, @parent_name, @notes, @qr, @now)`
       )
-      .run({ ...s, qr: newQrCode(), now: Date.now() });
-    res.json(studentPublic(db.prepare(`${ROSTER_SQL} WHERE s.id = ?`).get(info.lastInsertRowid)));
+      .run({ ...s, qr: await newQrCode(), now: Date.now() });
+    res.json(studentPublic(await db.prepare(`${ROSTER_SQL} WHERE s.id = ?`).get(info.lastInsertRowid)));
   })
 );
 
 app.put(
   '/api/students/:id',
   requireStaff,
-  ok((req, res) => {
+  ok(async (req, res) => {
     const s = cleanStudent(req.body || {});
-    const exists = db.prepare('SELECT 1 FROM students WHERE id = ?').get(req.params.id);
+    const exists = await db.prepare('SELECT 1 FROM students WHERE id = ?').get(req.params.id);
     if (!exists) return res.status(404).json({ error: 'No such student.' });
-    db.prepare(
+    await db.prepare(
       `UPDATE students SET ext_id=@ext_id, first_name=@first_name, last_name=@last_name, grade=@grade,
        teacher=@teacher, parent_email=@parent_email, parent_name=@parent_name, notes=@notes,
        active=@active WHERE id=@id`
     ).run({ ...s, active: req.body.active === false ? 0 : 1, id: req.params.id });
-    res.json(studentPublic(db.prepare(`${ROSTER_SQL} WHERE s.id = ?`).get(req.params.id)));
+    res.json(studentPublic(await db.prepare(`${ROSTER_SQL} WHERE s.id = ?`).get(req.params.id)));
   })
 );
 
 app.delete(
   '/api/students/:id',
   requireStaff,
-  ok((req, res) => {
-    db.prepare('DELETE FROM students WHERE id = ?').run(req.params.id);
+  ok(async (req, res) => {
+    await db.prepare('DELETE FROM students WHERE id = ?').run(req.params.id);
     res.json({ ok: true });
   })
 );
@@ -531,9 +432,9 @@ app.delete(
 app.post(
   '/api/students/:id/recode',
   requireStaff,
-  ok((req, res) => {
-    db.prepare('UPDATE students SET qr_code = ? WHERE id = ?').run(newQrCode(), req.params.id);
-    res.json(studentPublic(db.prepare(`${ROSTER_SQL} WHERE s.id = ?`).get(req.params.id)));
+  ok(async (req, res) => {
+    await db.prepare('UPDATE students SET qr_code = ? WHERE id = ?').run(await newQrCode(), req.params.id);
+    res.json(studentPublic(await db.prepare(`${ROSTER_SQL} WHERE s.id = ?`).get(req.params.id)));
   })
 );
 
@@ -553,7 +454,7 @@ const HEADER_MAP = {
 app.post(
   '/api/students/import',
   requireStaff,
-  ok((req, res) => {
+  ok(async (req, res) => {
     const text = String(req.body?.csv || '');
     if (!text.trim()) return res.status(400).json({ error: 'The file looked empty.' });
     let rows;
@@ -566,19 +467,18 @@ app.post(
     const mode = req.body.mode === 'replace' ? 'replace' : 'add';
     const result = { added: 0, updated: 0, skipped: [], total: rows.length };
 
-    const insert = db.prepare(
-      `INSERT INTO students (ext_id, first_name, last_name, grade, teacher, parent_email, parent_name, notes, qr_code, created_at)
-       VALUES (@extId, @firstName, @lastName, @grade, @teacher, @parentEmail, @parentName, @notes, @qr, @now)`
-    );
-    const updateByExt = db.prepare(
-      `UPDATE students SET first_name=@firstName, last_name=@lastName, grade=@grade, teacher=@teacher,
-       parent_email=@parentEmail, parent_name=@parentName, notes=@notes, active=1 WHERE id=@id`
-    );
+    await db.transaction(async (tx) => {
+      const insert = tx.prepare(
+        `INSERT INTO students (ext_id, first_name, last_name, grade, teacher, parent_email, parent_name, notes, qr_code, created_at)
+         VALUES (@extId, @firstName, @lastName, @grade, @teacher, @parentEmail, @parentName, @notes, @qr, @now)`
+      );
+      const updateByExt = tx.prepare(
+        `UPDATE students SET first_name=@firstName, last_name=@lastName, grade=@grade, teacher=@teacher,
+         parent_email=@parentEmail, parent_name=@parentName, notes=@notes, active=1 WHERE id=@id`
+      );
+      if (mode === 'replace') await tx.prepare('UPDATE students SET active = 0').run();
 
-    const run = db.transaction(() => {
-      if (mode === 'replace') db.prepare('UPDATE students SET active = 0').run();
-
-      rows.forEach((raw, i) => {
+      for (const [i, raw] of rows.entries()) {
         const rec = {};
         for (const [k, v] of Object.entries(raw)) {
           const key = HEADER_MAP[String(k).trim().toLowerCase()];
@@ -597,7 +497,7 @@ app.post(
         }
         if (!rec.firstName || !rec.lastName) {
           result.skipped.push({ line: i + 2, why: 'no name found' });
-          return;
+          continue;
         }
         const payload = {
           extId: rec.extId || null,
@@ -611,22 +511,20 @@ app.post(
         };
 
         const existing = payload.extId
-          ? db.prepare('SELECT id FROM students WHERE ext_id = ?').get(payload.extId)
-          : db
+          ? await tx.prepare('SELECT id FROM students WHERE ext_id = ?').get(payload.extId)
+          : await tx
               .prepare('SELECT id FROM students WHERE lower(first_name)=lower(?) AND lower(last_name)=lower(?)')
               .get(payload.firstName, payload.lastName);
 
         if (existing) {
-          updateByExt.run({ ...payload, id: existing.id });
+          await updateByExt.run({ ...payload, id: existing.id });
           result.updated++;
         } else {
-          insert.run({ ...payload, qr: newQrCode(), now: Date.now() });
+          await insert.run({ ...payload, qr: await newQrCode(), now: Date.now() });
           result.added++;
         }
-      });
+      }
     });
-
-    run();
     res.json(result);
   })
 );
@@ -637,7 +535,7 @@ app.get(
   '/api/students/:id/qr.png',
   requireStaff,
   ok(async (req, res) => {
-    const s = db.prepare('SELECT qr_code FROM students WHERE id = ?').get(req.params.id);
+    const s = await db.prepare('SELECT qr_code FROM students WHERE id = ?').get(req.params.id);
     if (!s) return res.sendStatus(404);
     const buf = await QRCode.toBuffer(s.qr_code, { errorCorrectionLevel: 'H', margin: 1, width: 512 });
     res.type('png').send(buf);
@@ -658,7 +556,7 @@ app.get(
       if (list.length) { sql += ` AND id IN (${list.map(() => '?').join(',')})`; params.push(...list); }
     }
     sql += ' ORDER BY grade, teacher, last_name, first_name';
-    const students = db.prepare(sql).all(...params);
+    const students = await db.prepare(sql).all(...params);
     const b = branding('published');
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', 'inline; filename="qr-cards.pdf"');
@@ -687,23 +585,23 @@ const upload = multer({
 app.post(
   '/api/batches',
   requireStaff,
-  ok((req, res) => {
+  ok(async (req, res) => {
     const name = String(req.body?.name || '').trim() || new Date().toLocaleString();
-    const info = db.prepare('INSERT INTO batches (name, created_at) VALUES (?, ?)').run(name, Date.now());
+    const info = await db.prepare('INSERT INTO batches (name, created_at) VALUES (?, ?)').run(name, Date.now());
     res.json({ id: info.lastInsertRowid, name });
   })
 );
 
-app.get('/api/batches', requireStaff, (req, res) =>
+app.get('/api/batches', requireStaff, ok(async (req, res) =>
   res.json(
-    db
+    await db
       .prepare(
         `SELECT b.*, (SELECT COUNT(*) FROM photos p WHERE p.batch_id = b.id) AS photos
          FROM batches b ORDER BY b.created_at DESC`
       )
       .all()
   )
-);
+));
 
 function photoFilePath(directory, filename) {
   const basename = path.basename(filename || '');
@@ -724,15 +622,12 @@ app.delete(
   ok(async (req, res) => {
     const batchId = Number(req.params.id);
     if (!Number.isSafeInteger(batchId) || batchId < 1) return res.status(400).json({ error: 'Invalid batch ID.' });
-    const batch = db.prepare('SELECT id FROM batches WHERE id = ?').get(batchId);
+    const batch = await db.prepare('SELECT id FROM batches WHERE id = ?').get(batchId);
     if (!batch) return res.status(404).json({ error: 'Batch not found.' });
 
-    const photos = db.prepare('SELECT file, thumb FROM photos WHERE batch_id = ?').all(batchId);
+    const photos = await db.prepare('SELECT file, thumb FROM photos WHERE batch_id = ?').all(batchId);
+    await db.prepare('DELETE FROM batches WHERE id = ?').run(batchId);
     await removePhotoFiles(photos);
-    db.transaction(() => {
-      db.prepare('DELETE FROM photos WHERE batch_id = ?').run(batchId);
-      db.prepare('DELETE FROM batches WHERE id = ?').run(batchId);
-    })();
     res.json({ ok: true, deletedPhotos: photos.length });
   })
 );
@@ -741,11 +636,11 @@ app.post(
   '/api/upload',
   requireStaff,
   upload.fields([{ name: 'file', maxCount: 1 }, { name: 'thumb', maxCount: 1 }]),
-  ok((req, res) => {
+  ok(async (req, res) => {
     const f = req.files?.file?.[0];
     if (!f) return res.status(400).json({ error: 'No photo was received.' });
     const thumb = req.files?.thumb?.[0];
-    const info = db
+    const info = await db
       .prepare(
         `INSERT INTO photos (batch_id, file, thumb, original, bytes, captured_at, seq_index, qr_value, created_at)
          VALUES (@batch, @file, @thumb, @original, @bytes, @captured, @seq, @qr, @now)`
@@ -773,38 +668,36 @@ function normalizeCode(v) {
   return s.toUpperCase();
 }
 
-function sortBatch(batchId) {
-  const students = db.prepare('SELECT id, qr_code FROM students').all();
+async function sortBatch(batchId) {
+  const students = await db.prepare('SELECT id, qr_code FROM students').all();
   const byCode = new Map(students.map((s) => [s.qr_code.toUpperCase(), s.id]));
-  const photos = db
+  const photos = await db
     .prepare('SELECT * FROM photos WHERE batch_id = ? ORDER BY seq_index, id')
     .all(batchId);
-
-  const setMarker = db.prepare('UPDATE photos SET student_id=?, is_marker=1, hidden=1 WHERE id=?');
-  const setPhoto = db.prepare('UPDATE photos SET student_id=?, is_marker=0 WHERE id=?');
 
   let current = null;
   const stats = { markers: 0, matched: 0, unmatched: 0, unknownCodes: [] };
 
-  const run = db.transaction(() => {
+  await db.transaction(async (tx) => {
+    const setMarker = tx.prepare('UPDATE photos SET student_id=?, is_marker=1, hidden=1 WHERE id=?');
+    const setPhoto = tx.prepare('UPDATE photos SET student_id=?, is_marker=0 WHERE id=?');
     for (const p of photos) {
       const code = normalizeCode(p.qr_value);
       if (code && byCode.has(code)) {
         current = byCode.get(code);
-        setMarker.run(current, p.id);
+        await setMarker.run(current, p.id);
         stats.markers++;
         continue;
       }
       if (code && !byCode.has(code)) stats.unknownCodes.push(code);
       if (p.assigned_by === 'staff') continue; // hand-placed photos stay put
-      setPhoto.run(current, p.id);
+      await setPhoto.run(current, p.id);
       if (current) stats.matched++;
       else stats.unmatched++;
     }
-    db.prepare('UPDATE batches SET sorted_at = ? WHERE id = ?').run(Date.now(), batchId);
+    await tx.prepare('UPDATE batches SET sorted_at = ? WHERE id = ?').run(Date.now(), batchId);
   });
 
-  run();
   stats.unknownCodes = [...new Set(stats.unknownCodes)];
   return stats;
 }
@@ -812,7 +705,7 @@ function sortBatch(batchId) {
 app.post(
   '/api/batches/:id/sort',
   requireStaff,
-  ok((req, res) => res.json(sortBatch(Number(req.params.id))))
+  ok(async (req, res) => res.json(await sortBatch(Number(req.params.id))))
 );
 
 /* ---------------------------------------------------------------- photos */
@@ -831,40 +724,42 @@ const photoPublic = (p) => ({
   studentName: p.first_name ? `${p.first_name} ${p.last_name}` : null
 });
 
-app.get('/api/students/:id/photos', requireStaff, (req, res) =>
+app.get('/api/students/:id/photos', requireStaff, ok(async (req, res) =>
   res.json(
-    db
+    (await db
       .prepare('SELECT * FROM photos WHERE student_id = ? ORDER BY COALESCE(captured_at,0), seq_index, id')
-      .all(req.params.id)
+      .all(req.params.id))
       .map(photoPublic)
   )
-);
+));
 
-app.get('/api/photos/unassigned', requireStaff, (req, res) =>
+app.get('/api/photos/unassigned', requireStaff, ok(async (req, res) =>
   res.json(
-    db
+    (await db
       .prepare(
         `SELECT p.* FROM photos p WHERE p.student_id IS NULL AND p.is_marker = 0
          ORDER BY COALESCE(p.captured_at,0), p.seq_index, p.id LIMIT 500`
       )
-      .all()
+      .all())
       .map(photoPublic)
   )
-);
+));
 
-app.get('/api/photos/:id/file', requireStaff, (req, res) => {
-  const p = db.prepare('SELECT * FROM photos WHERE id = ?').get(req.params.id);
+app.get('/api/photos/:id/file', requireStaff, ok(async (req, res) => {
+  const p = await db.prepare('SELECT * FROM photos WHERE id = ?').get(req.params.id);
   if (!p) return res.sendStatus(404);
   const thumb = req.query.size === 'thumb' && p.thumb;
-  res.sendFile(path.join(thumb ? UP_THUMB : UP_FULL, thumb ? p.thumb : p.file));
-});
+  res.sendFile(path.join(thumb ? UP_THUMB : UP_FULL, thumb ? p.thumb : p.file), (error) => {
+    if (error && !res.headersSent) res.sendStatus(error.code === 'ENOENT' ? 404 : 500);
+  });
+}));
 
 app.post(
   '/api/photos/:id/assign',
   requireStaff,
-  ok((req, res) => {
+  ok(async (req, res) => {
     const studentId = req.body?.studentId ? Number(req.body.studentId) : null;
-    db.prepare('UPDATE photos SET student_id = ?, assigned_by = ?, hidden = 0 WHERE id = ?').run(
+    await db.prepare('UPDATE photos SET student_id = ?, assigned_by = ?, hidden = 0 WHERE id = ?').run(
       studentId,
       studentId ? 'staff' : null,
       req.params.id
@@ -876,8 +771,8 @@ app.post(
 app.post(
   '/api/photos/:id/hide',
   requireStaff,
-  ok((req, res) => {
-    db.prepare('UPDATE photos SET hidden = ?, published = CASE WHEN ? THEN 0 ELSE published END WHERE id = ?').run(
+  ok(async (req, res) => {
+    await db.prepare('UPDATE photos SET hidden = ?, published = CASE WHEN ? THEN 0 ELSE published END WHERE id = ?').run(
       req.body?.hidden === false ? 0 : 1,
       req.body?.hidden === false ? 0 : 1,
       req.params.id
@@ -890,10 +785,10 @@ app.delete(
   '/api/photos/:id',
   requireStaff,
   ok(async (req, res) => {
-    const p = db.prepare('SELECT * FROM photos WHERE id = ?').get(req.params.id);
+    const p = await db.prepare('SELECT * FROM photos WHERE id = ?').get(req.params.id);
     if (p) {
+      await db.prepare('DELETE FROM photos WHERE id = ?').run(p.id);
       await removePhotoFiles([p]);
-      db.prepare('DELETE FROM photos WHERE id = ?').run(p.id);
     }
     res.json({ ok: true });
   })
@@ -901,27 +796,27 @@ app.delete(
 
 /* ------------------------------------------------------------- galleries */
 
-function publishStudent(id) {
+async function publishStudent(id) {
   const cfg = config();
-  const s = db.prepare('SELECT * FROM students WHERE id = ?').get(id);
+  const s = await db.prepare('SELECT * FROM students WHERE id = ?').get(id);
   if (!s) return null;
   const token = s.gallery_token || newGalleryToken();
   const expires = Date.now() + cfg.galleryDays * 24 * 60 * 60 * 1000;
-  db.prepare('UPDATE students SET gallery_token=?, expires_at=?, published_at=? WHERE id=?').run(
+  await db.prepare('UPDATE students SET gallery_token=?, expires_at=?, published_at=? WHERE id=?').run(
     token,
     expires,
     Date.now(),
     id
   );
-  db.prepare('UPDATE photos SET published = 1 WHERE student_id = ? AND is_marker = 0 AND hidden = 0').run(id);
+  await db.prepare('UPDATE photos SET published = 1 WHERE student_id = ? AND is_marker = 0 AND hidden = 0').run(id);
   return db.prepare(`${ROSTER_SQL} WHERE s.id = ?`).get(id);
 }
 
 app.post(
   '/api/students/:id/publish',
   requireStaff,
-  ok((req, res) => {
-    const s = publishStudent(Number(req.params.id));
+  ok(async (req, res) => {
+    const s = await publishStudent(Number(req.params.id));
     if (!s) return res.status(404).json({ error: 'No such student.' });
     res.json(studentPublic(s));
   })
@@ -930,9 +825,9 @@ app.post(
 app.post(
   '/api/students/:id/unpublish',
   requireStaff,
-  ok((req, res) => {
-    db.prepare('UPDATE students SET published_at = NULL WHERE id = ?').run(req.params.id);
-    db.prepare('UPDATE photos SET published = 0 WHERE student_id = ?').run(req.params.id);
+  ok(async (req, res) => {
+    await db.prepare('UPDATE students SET published_at = NULL WHERE id = ?').run(req.params.id);
+    await db.prepare('UPDATE photos SET published = 0 WHERE student_id = ?').run(req.params.id);
     res.json({ ok: true });
   })
 );
@@ -940,15 +835,15 @@ app.post(
 app.post(
   '/api/publish/ready',
   requireStaff,
-  ok((req, res) => {
+  ok(async (req, res) => {
     const cfg = config();
-    const rows = db
+    const rows = await db
       .prepare(
         `${ROSTER_SQL} WHERE s.active = 1 AND s.published_at IS NULL
          AND (SELECT COUNT(*) FROM photos p WHERE p.student_id = s.id AND p.is_marker = 0 AND p.hidden = 0) >= ?`
       )
       .all(cfg.minPhotos);
-    rows.forEach((r) => publishStudent(r.id));
+    for (const row of rows) await publishStudent(row.id);
     res.json({ published: rows.length });
   })
 );
@@ -956,11 +851,11 @@ app.post(
 app.get(
   '/api/gallery/:token',
   galleryLimiter,
-  ok((req, res) => {
-    const s = db.prepare('SELECT * FROM students WHERE gallery_token = ?').get(req.params.token);
+  ok(async (req, res) => {
+    const s = await db.prepare('SELECT * FROM students WHERE gallery_token = ?').get(req.params.token);
     if (!s || !s.published_at) return res.status(404).json({ error: 'not-found' });
     if (s.expires_at && s.expires_at < Date.now()) return res.status(410).json({ error: 'expired' });
-    const photos = db
+    const photos = await db
       .prepare(
         `SELECT id, captured_at FROM photos WHERE student_id = ? AND published = 1 AND hidden = 0 AND is_marker = 0
          ORDER BY COALESCE(captured_at,0), seq_index, id`
@@ -976,11 +871,11 @@ app.get(
   })
 );
 
-app.get('/api/gallery/:token/photo/:id', galleryLimiter, (req, res) => {
-  const s = db.prepare('SELECT * FROM students WHERE gallery_token = ?').get(req.params.token);
+app.get('/api/gallery/:token/photo/:id', galleryLimiter, ok(async (req, res) => {
+  const s = await db.prepare('SELECT * FROM students WHERE gallery_token = ?').get(req.params.token);
   if (!s || !s.published_at) return res.sendStatus(404);
   if (s.expires_at && s.expires_at < Date.now()) return res.sendStatus(410);
-  const p = db
+  const p = await db
     .prepare('SELECT * FROM photos WHERE id = ? AND student_id = ? AND published = 1 AND hidden = 0')
     .get(req.params.id, s.id);
   if (!p) return res.sendStatus(404);
@@ -990,8 +885,10 @@ app.get('/api/gallery/:token/photo/:id', galleryLimiter, (req, res) => {
       'Content-Disposition',
       `attachment; filename="${s.last_name}-${s.first_name}-${p.id}${path.extname(p.file) || '.jpg'}"`
     );
-  res.sendFile(path.join(thumb ? UP_THUMB : UP_FULL, thumb ? p.thumb : p.file));
-});
+  res.sendFile(path.join(thumb ? UP_THUMB : UP_FULL, thumb ? p.thumb : p.file), (error) => {
+    if (error && !res.headersSent) res.sendStatus(error.code === 'ENOENT' ? 404 : 500);
+  });
+}));
 
 /* ----------------------------------------------------------------- email */
 
@@ -1025,7 +922,7 @@ async function sendGalleryEmail(student) {
   const recipient = String(student.parent_email || '').trim();
   const vars = emailVars(student);
   const attemptedAt = Date.now();
-  const attempt = db.prepare(
+  const attempt = await db.prepare(
     `INSERT INTO gallery_email_attempts
       (student_id, recipient_email, email_type, attempted_at, status)
      VALUES (?, ?, 'gallery', ?, 'pending')`
@@ -1043,25 +940,25 @@ async function sendGalleryEmail(student) {
     });
   } catch (error) {
     const message = String(error?.message || error).slice(0, 300);
-    db.prepare('UPDATE gallery_email_attempts SET status = ?, error_message = ? WHERE id = ?')
+    await db.prepare('UPDATE gallery_email_attempts SET status = ?, error_message = ? WHERE id = ?')
       .run('failed', message, attempt.lastInsertRowid);
     throw error;
   }
 
-  db.prepare('UPDATE gallery_email_attempts SET status = ? WHERE id = ?')
+  await db.prepare('UPDATE gallery_email_attempts SET status = ? WHERE id = ?')
     .run('sent', attempt.lastInsertRowid);
   return { attemptedAt };
 }
 
-app.get('/api/students/:id/email-history', requireStaff, (req, res) => {
-  const student = db.prepare(
+app.get('/api/students/:id/email-history', requireStaff, ok(async (req, res) => {
+  const student = await db.prepare(
     `SELECT parent_email, published_at,
       (gallery_token IS NOT NULL AND gallery_token <> '') AS has_gallery_token
      FROM students WHERE id = ?`
   ).get(req.params.id);
   if (!student) return res.status(404).json({ error: 'No such student.' });
 
-  const attempts = db.prepare(
+  const attempts = await db.prepare(
     `SELECT id, recipient_email, email_type, attempted_at, status, error_message
      FROM gallery_email_attempts
      WHERE student_id = ? AND email_type = 'gallery'
@@ -1074,13 +971,13 @@ app.get('/api/students/:id/email-history', requireStaff, (req, res) => {
     hasValidRecipient: validRecipientEmail(student.parent_email),
     attempts
   });
-});
+}));
 
 app.post(
   '/api/students/:id/resend-gallery-email',
   requireStaff,
   ok(async (req, res) => {
-    const student = db.prepare('SELECT * FROM students WHERE id = ?').get(req.params.id);
+    const student = await db.prepare('SELECT * FROM students WHERE id = ?').get(req.params.id);
     if (!student) return res.status(404).json({ error: 'No such student.' });
     if (!student.published_at || !student.gallery_token) {
       return res.status(409).json({ status: 'unpublished', error: 'Gallery is not published.' });
@@ -1096,19 +993,19 @@ app.post(
       result = await sendGalleryEmail({ ...student, parent_email: recipient });
     } catch (error) {
       const attemptedAt = Date.now();
-      db.prepare('INSERT INTO email_log (student_id, to_email, status, detail, sent_at) VALUES (?,?,?,?,?)')
+      await db.prepare('INSERT INTO email_log (student_id, to_email, status, detail, sent_at) VALUES (?,?,?,?,?)')
         .run(student.id, recipient, 'failed', String(error.message || error).slice(0, 300), attemptedAt);
       return res.status(502).json({ status: 'failed', error: String(error.message || error).slice(0, 300) });
     }
 
-    db.prepare('INSERT INTO email_log (student_id, to_email, status, sent_at) VALUES (?,?,?,?)')
+    await db.prepare('INSERT INTO email_log (student_id, to_email, status, sent_at) VALUES (?,?,?,?)')
       .run(student.id, recipient, 'sent', Date.now());
     return res.json({ status: 'sent', acceptedByGateway: true, attemptedAt: result.attemptedAt });
   })
 );
 
-app.get('/api/email/pending', requireStaff, (req, res) => {
-  const rows = db
+app.get('/api/email/pending', requireStaff, ok(async (req, res) => {
+  const rows = await db
     .prepare(
       `${ROSTER_SQL} WHERE s.published_at IS NOT NULL AND s.parent_email IS NOT NULL
        AND (SELECT COUNT(*) FROM email_log e WHERE e.student_id = s.id AND e.status='sent') = 0
@@ -1116,10 +1013,10 @@ app.get('/api/email/pending', requireStaff, (req, res) => {
     )
     .all();
   res.json(rows.map(studentPublic));
-});
+}));
 
-app.get('/api/email/export.csv', requireStaff, (req, res) => {
-  const rows = db.prepare('SELECT * FROM students ORDER BY last_name, first_name').all();
+app.get('/api/email/export.csv', requireStaff, ok(async (req, res) => {
+  const rows = await db.prepare('SELECT * FROM students ORDER BY last_name, first_name').all();
   const base = (config().publicUrl || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
   const esc = (v) => {
     const value = String(v ?? '');
@@ -1146,7 +1043,7 @@ app.get('/api/email/export.csv', requireStaff, (req, res) => {
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', 'attachment; filename="gallery-links.csv"');
   res.send(lines.join('\n'));
-});
+}));
 
 app.post(
   '/api/email/send',
@@ -1158,7 +1055,7 @@ app.post(
 
     const out = { sent: 0, failed: 0, errors: [] };
     for (const id of ids) {
-      const s = db.prepare('SELECT * FROM students WHERE id = ?').get(id);
+      const s = await db.prepare('SELECT * FROM students WHERE id = ?').get(id);
       if (!s || !s.parent_email || !s.gallery_token) {
         out.failed++;
         out.errors.push({ id, error: 'missing email or unpublished gallery' });
@@ -1166,12 +1063,12 @@ app.post(
       }
       try {
         await sendGalleryEmail(s);
-        db.prepare('INSERT INTO email_log (student_id, to_email, status, sent_at) VALUES (?,?,?,?)').run(
+        await db.prepare('INSERT INTO email_log (student_id, to_email, status, sent_at) VALUES (?,?,?,?)').run(
           s.id, s.parent_email, 'sent', Date.now()
         );
         out.sent++;
       } catch (e) {
-        db.prepare('INSERT INTO email_log (student_id, to_email, status, detail, sent_at) VALUES (?,?,?,?,?)').run(
+        await db.prepare('INSERT INTO email_log (student_id, to_email, status, detail, sent_at) VALUES (?,?,?,?,?)').run(
           s.id, s.parent_email, 'failed', String(e.message).slice(0, 300), Date.now()
         );
         out.failed++;
@@ -1320,9 +1217,9 @@ function sanitizeBranding(input, previous) {
 app.put(
   '/api/branding/draft',
   requireUser,
-  ok((req, res) => {
+  ok(async (req, res) => {
     const draft = sanitizeBranding(req.body || {}, branding('draft'));
-    setSetting('branding_draft', draft);
+    await setSetting('branding_draft', draft);
     res.json(draft);
   })
 );
@@ -1330,9 +1227,9 @@ app.put(
 app.post(
   '/api/branding/publish',
   requireStaff,
-  ok((req, res) => {
+  ok(async (req, res) => {
     const draft = branding('draft');
-    setSetting('branding_published', draft);
+    await setSetting('branding_published', draft);
     res.json(draft);
   })
 );
@@ -1340,9 +1237,9 @@ app.post(
 app.post(
   '/api/branding/revert',
   requireUser,
-  ok((req, res) => {
+  ok(async (req, res) => {
     const published = branding('published');
-    setSetting('branding_draft', published);
+    await setSetting('branding_draft', published);
     res.json(published);
   })
 );
@@ -1362,11 +1259,11 @@ app.post(
   '/api/branding/:kind(logo|artwork|galleryArtwork)',
   requireUser,
   brandUpload.single('image'),
-  ok((req, res) => {
+  ok(async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No image was received.' });
     const draft = branding('draft');
     draft[req.params.kind] = req.file.filename;
-    setSetting('branding_draft', draft);
+    await setSetting('branding_draft', draft);
     res.json(draft);
   })
 );
@@ -1375,7 +1272,7 @@ app.post(
   '/api/branding/block-image',
   requireUser,
   brandUpload.single('image'),
-  ok((req, res) => {
+  ok(async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No image was received.' });
     const draft = branding('draft');
     draft.blocks = [...(draft.blocks || []), {
@@ -1389,7 +1286,7 @@ app.post(
       size: 1.4,
       color: 'ink'
     }].slice(0, 24);
-    setSetting('branding_draft', draft);
+    await setSetting('branding_draft', draft);
     res.json(draft);
   })
 );
@@ -1397,10 +1294,10 @@ app.post(
 app.delete(
   '/api/branding/:kind(logo|artwork|galleryArtwork)',
   requireUser,
-  ok((req, res) => {
+  ok(async (req, res) => {
     const draft = branding('draft');
     draft[req.params.kind] = null;
-    setSetting('branding_draft', draft);
+    await setSetting('branding_draft', draft);
     res.json(draft);
   })
 );
@@ -1414,53 +1311,53 @@ app.get('/api/fonts', (req, res) => res.json(SAFE_FONTS));
 
 /* ----------------------------------------------------------------- stats */
 
-app.get('/api/stats', requireStaff, (req, res) => {
+app.get('/api/stats', requireStaff, ok(async (req, res) => {
   const cfg = config();
   const row = (sql, ...p) => db.prepare(sql).get(...p);
 
-  const totals = row('SELECT COUNT(*) total, SUM(active) active FROM students');
-  const photographed = row(
+  const totals = await row('SELECT COUNT(*) total, SUM(active) active FROM students');
+  const photographed = (await row(
     `SELECT COUNT(*) n FROM students s WHERE s.active = 1
      AND (SELECT COUNT(*) FROM photos p WHERE p.student_id = s.id AND p.is_marker = 0 AND p.hidden = 0) >= ?`,
     cfg.minPhotos
-  ).n;
-  const thin = row(
+  )).n;
+  const thin = (await row(
     `SELECT COUNT(*) n FROM students s WHERE s.active = 1
      AND (SELECT COUNT(*) FROM photos p WHERE p.student_id = s.id AND p.is_marker = 0 AND p.hidden = 0)
          BETWEEN 1 AND ?`,
     Math.max(0, cfg.minPhotos - 1)
-  ).n;
-  const noEmail = row(
+  )).n;
+  const noEmail = (await row(
     `SELECT COUNT(*) n FROM students WHERE active = 1 AND (parent_email IS NULL OR parent_email = '')`
-  ).n;
-  const photos = row(
+  )).n;
+  const photos = await row(
     `SELECT COUNT(*) total,
       SUM(CASE WHEN is_marker = 1 THEN 1 ELSE 0 END) markers,
       SUM(CASE WHEN is_marker = 0 AND student_id IS NOT NULL THEN 1 ELSE 0 END) matched,
       SUM(CASE WHEN is_marker = 0 AND student_id IS NULL THEN 1 ELSE 0 END) unmatched
      FROM photos`
   );
-  const published = row('SELECT COUNT(*) n FROM students WHERE published_at IS NOT NULL').n;
-  const awaiting = row(
+  const published = (await row('SELECT COUNT(*) n FROM students WHERE published_at IS NOT NULL')).n;
+  const awaiting = (await row(
     `SELECT COUNT(*) n FROM students s WHERE s.active = 1 AND s.published_at IS NULL
      AND (SELECT COUNT(*) FROM photos p WHERE p.student_id = s.id AND p.is_marker = 0 AND p.hidden = 0) >= ?`,
     cfg.minPhotos
-  ).n;
-  const emails = row(
+  )).n;
+  const emails = (await row(
     `SELECT COUNT(DISTINCT student_id) n FROM email_log WHERE status = 'sent'`
-  ).n;
-  const emailPending = row(
+  )).n;
+  const emailPending = (await row(
     `SELECT COUNT(*) n FROM students s WHERE s.published_at IS NOT NULL AND s.parent_email IS NOT NULL
      AND (SELECT COUNT(*) FROM email_log e WHERE e.student_id = s.id AND e.status = 'sent') = 0`
-  ).n;
+  )).n;
 
-  const tiles = db
+  const tiles = (await db
     .prepare(
       `SELECT s.id, s.first_name, s.last_name, s.grade, s.published_at,
         (SELECT COUNT(*) FROM photos p WHERE p.student_id = s.id AND p.is_marker = 0 AND p.hidden = 0) AS n
        FROM students s WHERE s.active = 1 ORDER BY s.grade, s.last_name, s.first_name`
     )
-    .all()
+    .all())
     .map((s) => ({
       id: s.id,
       name: `${s.first_name} ${s.last_name}`,
@@ -1482,19 +1379,31 @@ app.get('/api/stats', requireStaff, (req, res) => {
     tiles,
     config: cfg
   });
-});
+}));
 
 /* ----------------------------------------------------------- error trap */
 
 app.use((err, req, res, next) => {
   console.error(err);
-  const msg = err.code === 'LIMIT_FILE_SIZE' ? 'That file is larger than the 60 MB limit.' : err.message || 'Something went wrong.';
-  if (req.path.startsWith('/api/')) return res.status(400).json({ error: msg });
-  res.status(500).send(msg);
+  const clientMessage = err.code === 'LIMIT_FILE_SIZE'
+    ? 'That file is larger than the 60 MB limit.'
+    : err.status && err.status < 500
+      ? err.message
+      : 'The request could not be completed. Please try again.';
+  if (req.path.startsWith('/api/')) return res.status(err.status || 500).json({ error: clientMessage });
+  res.status(err.status || 500).send(clientMessage);
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-  const first = userCount() === 0;
-  console.log(`\n  Picture Day is running at http://localhost:${PORT}`);
-  console.log(first ? '  First run — open that address to create the staff account.\n' : '  Staff sign-in: /login\n');
-});
+initialize()
+  .then(async () => {
+    const first = await userCount() === 0;
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`\n  Picture Day is running on port ${PORT}`);
+      console.log(first ? '  First run — open /setup to create the administrator.\n' : '  Staff sign-in: /login\n');
+    });
+  })
+  .catch((error) => {
+    console.error(`Picture Day startup failed: ${error.message}`);
+    process.exitCode = 1;
+    db.close().catch((closeError) => console.error('Failed to close MySQL pool:', closeError.message));
+  });
