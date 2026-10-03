@@ -15,7 +15,7 @@ const bcrypt = require('bcryptjs');
 const QRCode = require('qrcode');
 const { parse: parseCsv } = require('csv-parse/sync');
 
-const { db, config, branding, setSetting, newQrCode, newGalleryToken, DEFAULT_BRANDING } = require('./lib/db.js');
+const { db, DATA_DIR, config, branding, setSetting, newQrCode, newGalleryToken, DEFAULT_BRANDING } = require('./lib/db.js');
 const cards = require('./lib/cards.js');
 const mail = require('./lib/mail.js');
 
@@ -325,6 +325,65 @@ app.post(
 app.get('/api/staff-users', requireAdmin, (req, res) => {
   const users = db.prepare("SELECT id, username FROM users WHERE role = 'staff' ORDER BY username").all();
   res.json(users);
+});
+
+function inspectPath(targetPath) {
+  try {
+    const stats = fs.statSync(targetPath);
+    return {
+      exists: true,
+      isDirectory: stats.isDirectory(),
+      isFile: stats.isFile(),
+      sizeBytes: stats.isFile() ? stats.size : null
+    };
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      return { exists: false, isDirectory: false, isFile: false, sizeBytes: null };
+    }
+    throw err;
+  }
+}
+
+app.get('/api/debug/storage-check-7f3a9c', (req, res) => {
+  const databasePath = path.join(DATA_DIR, 'pictureday.db');
+  const database = inspectPath(databasePath);
+  const uploads = [
+    ['full', UP_FULL],
+    ['thumb', UP_THUMB],
+    ['brand', UP_BRAND]
+  ].map(([name, directory]) => {
+    const info = inspectPath(directory);
+    if (!info.isDirectory) {
+      return { name, path: directory, ...info, fileCount: null, representativeFiles: [] };
+    }
+
+    const files = fs.readdirSync(directory, { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    return {
+      name,
+      path: directory,
+      ...info,
+      fileCount: files.length,
+      representativeFiles: files.slice(0, 3).map((entry) => {
+        const filePath = path.join(directory, entry.name);
+        return { name: entry.name, sizeBytes: fs.statSync(filePath).size };
+      })
+    };
+  });
+
+  res.json({
+    processCwd: process.cwd(),
+    __dirname: ROOT,
+    database: {
+      path: databasePath,
+      ...database,
+      users: db.prepare('SELECT COUNT(*) AS count FROM users').get().count,
+      students: db.prepare('SELECT COUNT(*) AS count FROM students').get().count
+    },
+    uploads
+  });
 });
 
 app.post(
