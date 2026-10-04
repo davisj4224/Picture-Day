@@ -21,6 +21,7 @@ const mail = require('./lib/mail.js');
 const {
   publishStudentRecord,
   galleryStudentByToken,
+  galleryTokenHealth,
   galleryStudentForEmail,
   galleryLink: buildGalleryLink
 } = require('./lib/gallery.js');
@@ -843,6 +844,14 @@ app.post(
       .all(cfg.minPhotos);
     for (const row of rows) await publishStudent(row.id);
     res.json({ published: rows.length });
+  })
+);
+
+app.get(
+  '/api/admin/gallery-token-health/:token',
+  requireStaff,
+  ok(async (req, res) => {
+    res.json(await galleryTokenHealth(db, req.params.token));
   })
 );
 

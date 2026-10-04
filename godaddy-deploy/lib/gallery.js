@@ -51,6 +51,43 @@ async function galleryStudentByToken(db, token, now = Date.now()) {
   return { student, status: 'published' };
 }
 
+async function galleryTokenHealth(db, token, now = Date.now()) {
+  const student = await db.prepare(
+    `SELECT id, gallery_token, published_at, expires_at
+     FROM students WHERE gallery_token = ?`
+  ).get(token);
+
+  if (!student) {
+    return {
+      found: false,
+      published: false,
+      hasToken: false,
+      hasPublishedAt: false,
+      hasExpiresAt: false,
+      expired: false,
+      photoCount: 0
+    };
+  }
+
+  const photoCount = await db.prepare(
+    `SELECT COUNT(*) AS photo_count FROM photos
+     WHERE student_id = ? AND published = 1 AND hidden = 0 AND is_marker = 0`
+  ).get(student.id);
+  const hasPublishedAt = student.published_at !== null && student.published_at !== undefined;
+  const hasExpiresAt = student.expires_at !== null && student.expires_at !== undefined;
+  const expired = hasExpiresAt && Number(student.expires_at) < now;
+
+  return {
+    found: true,
+    published: hasPublishedAt,
+    hasToken: Boolean(student.gallery_token),
+    hasPublishedAt,
+    hasExpiresAt,
+    expired,
+    photoCount: Number(photoCount?.photo_count || 0)
+  };
+}
+
 async function galleryStudentForEmail(db, id, now = Date.now()) {
   const student = await db.prepare('SELECT * FROM students WHERE id = ?').get(id);
   if (!student || !student.published_at || !validGalleryToken(student.gallery_token)) {
@@ -76,6 +113,7 @@ function galleryLink(token, publicUrl) {
 module.exports = {
   publishStudentRecord,
   galleryStudentByToken,
+  galleryTokenHealth,
   galleryStudentForEmail,
   galleryLink
 };
