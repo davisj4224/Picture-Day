@@ -3,6 +3,12 @@ import { scan, ready as readerReady } from '/assets/qr-scan.js';
 
 const state = { students: [], stats: null, config: {}, branding: null, gallery: null, selected: new Set() };
 
+function galleryUrl(token) {
+  const base = String(state.config.publicUrl || '').replace(/\/+$/, '');
+  if (!base) return '';
+  return `${base}/g/${encodeURIComponent(token)}`;
+}
+
 /* ------------------------------------------------------------- startup */
 
 const me = await session();
@@ -553,7 +559,7 @@ async function openGallery(id) {
     : '<p class="hint">No photos for this student yet.</p>';
 
   $('#galleryActions').hidden = false;
-  const link = s.galleryToken ? `${location.origin}/g/${s.galleryToken}` : '';
+  const link = s.publishedAt && s.galleryToken ? galleryUrl(s.galleryToken) : '';
   $('#openLink').hidden = !link;
   $('#openLink').href = link;
   $('#galleryEmailHistory').hidden = false;
@@ -686,8 +692,10 @@ $('#unpublishOne').addEventListener('click', async () => {
 
 $('#copyLink').addEventListener('click', async () => {
   const s = state.students.find((x) => x.id === Number($('#galleryStudent').value));
-  if (!s?.galleryToken) return toast('Publish the gallery first.', 'bad');
-  await navigator.clipboard.writeText(`${location.origin}/g/${s.galleryToken}`);
+  if (!s?.publishedAt || !s.galleryToken) return toast('Publish the gallery first.', 'bad');
+  const link = galleryUrl(s.galleryToken);
+  if (!link) return toast('Set the public gallery URL in Settings before copying family links.', 'bad');
+  await navigator.clipboard.writeText(link);
   toast('Link copied.', 'good');
 });
 

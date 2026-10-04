@@ -18,6 +18,12 @@ const { parse: parseCsv } = require('csv-parse/sync');
 const { db, initialize, config, branding, setSetting, newQrCode, newGalleryToken, DEFAULT_BRANDING } = require('./lib/db.js');
 const cards = require('./lib/cards.js');
 const mail = require('./lib/mail.js');
+const {
+  publishStudentRecord,
+  galleryStudentByToken,
+  galleryStudentForEmail,
+  galleryLink: buildGalleryLink
+} = require('./lib/gallery.js');
 
 
 
@@ -798,16 +804,8 @@ app.delete(
 
 async function publishStudent(id) {
   const cfg = config();
-  const s = await db.prepare('SELECT * FROM students WHERE id = ?').get(id);
+  const s = await publishStudentRecord(db, id, cfg.galleryDays, newGalleryToken);
   if (!s) return null;
-  const token = s.gallery_token || newGalleryToken();
-  const expires = Date.now() + cfg.galleryDays * 24 * 60 * 60 * 1000;
-  await db.prepare('UPDATE students SET gallery_token=?, expires_at=?, published_at=? WHERE id=?').run(
-    token,
-    expires,
-    Date.now(),
-    id
-  );
   await db.prepare('UPDATE photos SET published = 1 WHERE student_id = ? AND is_marker = 0 AND hidden = 0').run(id);
   return db.prepare(`${ROSTER_SQL} WHERE s.id = ?`).get(id);
 }
@@ -852,9 +850,10 @@ app.get(
   '/api/gallery/:token',
   galleryLimiter,
   ok(async (req, res) => {
-    const s = await db.prepare('SELECT * FROM students WHERE gallery_token = ?').get(req.params.token);
-    if (!s || !s.published_at) return res.status(404).json({ error: 'not-found' });
-    if (s.expires_at && s.expires_at < Date.now()) return res.status(410).json({ error: 'expired' });
+    const gallery = await galleryStudentByToken(db, req.params.token);
+    if (gallery.status === 'not-found') return res.status(404).json({ error: 'not-found' });
+    if (gallery.status === 'expired') return res.status(410).json({ error: 'expired' });
+    const s = gallery.student;
     const photos = await db
       .prepare(
         `SELECT id, captured_at FROM photos WHERE student_id = ? AND published = 1 AND hidden = 0 AND is_marker = 0
@@ -872,9 +871,10 @@ app.get(
 );
 
 app.get('/api/gallery/:token/photo/:id', galleryLimiter, ok(async (req, res) => {
-  const s = await db.prepare('SELECT * FROM students WHERE gallery_token = ?').get(req.params.token);
-  if (!s || !s.published_at) return res.sendStatus(404);
-  if (s.expires_at && s.expires_at < Date.now()) return res.sendStatus(410);
+  const gallery = await galleryStudentByToken(db, req.params.token);
+  if (gallery.status === 'not-found') return res.sendStatus(404);
+  if (gallery.status === 'expired') return res.sendStatus(410);
+  const s = gallery.student;
   const p = await db
     .prepare('SELECT * FROM photos WHERE id = ? AND student_id = ? AND published = 1 AND hidden = 0')
     .get(req.params.id, s.id);
@@ -894,8 +894,7 @@ app.get('/api/gallery/:token/photo/:id', galleryLimiter, ok(async (req, res) => 
 
 function galleryLink(student) {
   const cfg = config();
-  const base = (cfg.publicUrl || `http://localhost:${PORT}`).replace(/\/+$/, '');
-  return `${base}/g/${student.gallery_token}`;
+  return buildGalleryLink(student.gallery_token, cfg.publicUrl);
 }
 
 function emailVars(s) {
@@ -916,7 +915,8 @@ function validRecipientEmail(value) {
   return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-async function sendGalleryEmail(student) {
+async function sendGalleryEmail(studentId) {
+  const student = await galleryStudentForEmail(db, studentId);
   const cfg = config();
   const palette = branding('published').palette;
   const recipient = String(student.parent_email || '').trim();
@@ -947,7 +947,7 @@ async function sendGalleryEmail(student) {
 
   await db.prepare('UPDATE gallery_email_attempts SET status = ? WHERE id = ?')
     .run('sent', attempt.lastInsertRowid);
-  return { attemptedAt };
+  return { attemptedAt, student };
 }
 
 app.get('/api/students/:id/email-history', requireStaff, ok(async (req, res) => {
@@ -977,10 +977,17 @@ app.post(
   '/api/students/:id/resend-gallery-email',
   requireStaff,
   ok(async (req, res) => {
-    const student = await db.prepare('SELECT * FROM students WHERE id = ?').get(req.params.id);
-    if (!student) return res.status(404).json({ error: 'No such student.' });
-    if (!student.published_at || !student.gallery_token) {
-      return res.status(409).json({ status: 'unpublished', error: 'Gallery is not published.' });
+    let student;
+    try {
+      student = await galleryStudentForEmail(db, req.params.id);
+    } catch (error) {
+      if (error.code === 'GALLERY_NOT_PUBLISHED') {
+        return res.status(409).json({ status: 'unpublished', error: error.message });
+      }
+      if (error.code === 'GALLERY_EXPIRED') {
+        return res.status(409).json({ status: 'expired', error: error.message });
+      }
+      throw error;
     }
 
     const recipient = String(student.parent_email || '').trim();
@@ -990,7 +997,7 @@ app.post(
 
     let result;
     try {
-      result = await sendGalleryEmail({ ...student, parent_email: recipient });
+      result = await sendGalleryEmail(student.id);
     } catch (error) {
       const attemptedAt = Date.now();
       await db.prepare('INSERT INTO email_log (student_id, to_email, status, detail, sent_at) VALUES (?,?,?,?,?)')
@@ -999,7 +1006,7 @@ app.post(
     }
 
     await db.prepare('INSERT INTO email_log (student_id, to_email, status, sent_at) VALUES (?,?,?,?)')
-      .run(student.id, recipient, 'sent', Date.now());
+      .run(student.id, result.student.parent_email, 'sent', Date.now());
     return res.json({ status: 'sent', acceptedByGateway: true, attemptedAt: result.attemptedAt });
   })
 );
@@ -1017,7 +1024,7 @@ app.get('/api/email/pending', requireStaff, ok(async (req, res) => {
 
 app.get('/api/email/export.csv', requireStaff, ok(async (req, res) => {
   const rows = await db.prepare('SELECT * FROM students ORDER BY last_name, first_name').all();
-  const base = (config().publicUrl || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
+  const cfg = config();
   const esc = (v) => {
     const value = String(v ?? '');
     const safe = /^[\u0000-\u0020]*[=+\-@]/.test(value) ? `'${value}` : value;
@@ -1032,7 +1039,7 @@ app.get('/api/email/export.csv', requireStaff, ok(async (req, res) => {
         s.grade,
         s.teacher,
         s.parent_email,
-        published ? `${base}/g/${s.gallery_token}` : '',
+        published ? galleryLink(s) : '',
         published && s.expires_at ? new Date(s.expires_at).toLocaleDateString() : '',
         published ? 'Published' : 'Not published'
       ]
@@ -1055,16 +1062,23 @@ app.post(
 
     const out = { sent: 0, failed: 0, errors: [] };
     for (const id of ids) {
-      const s = await db.prepare('SELECT * FROM students WHERE id = ?').get(id);
-      if (!s || !s.parent_email || !s.gallery_token) {
+      let s;
+      try {
+        s = await galleryStudentForEmail(db, id);
+      } catch (error) {
         out.failed++;
-        out.errors.push({ id, error: 'missing email or unpublished gallery' });
+        out.errors.push({ id, error: error.message });
+        continue;
+      }
+      if (!s.parent_email) {
+        out.failed++;
+        out.errors.push({ id, error: 'missing email' });
         continue;
       }
       try {
-        await sendGalleryEmail(s);
+        const result = await sendGalleryEmail(id);
         await db.prepare('INSERT INTO email_log (student_id, to_email, status, sent_at) VALUES (?,?,?,?)').run(
-          s.id, s.parent_email, 'sent', Date.now()
+          result.student.id, result.student.parent_email, 'sent', Date.now()
         );
         out.sent++;
       } catch (e) {
@@ -1089,7 +1103,7 @@ app.post(
     const b = branding('published');
     const vars = {
       student: 'Sample Student', first: 'Sample', school: b.schoolName, event: b.eventName, year: b.year,
-      link: `${(cfg.publicUrl || `http://localhost:${PORT}`).replace(/\/+$/, '')}/g/sample-link`,
+      link: buildGalleryLink('A'.repeat(32), cfg.publicUrl),
       expires: new Date(Date.now() + cfg.galleryDays * 864e5).toLocaleDateString()
     };
     await mail.send({

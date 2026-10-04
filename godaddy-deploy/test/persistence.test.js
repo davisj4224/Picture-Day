@@ -6,6 +6,11 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { test } = require('node:test');
+const {
+  publishStudentRecord,
+  galleryStudentByToken,
+  galleryLink
+} = require('../lib/gallery');
 
 const appRoot = path.join(__dirname, '..');
 const databaseSource = fs.readFileSync(path.join(appRoot, 'lib', 'db.js'), 'utf8');
@@ -56,12 +61,14 @@ test('MySQL state and file references survive schema re-initialization', {
   const username = `persist-${suffix}`;
   const qrCode = `PD-2026-${suffix.toUpperCase()}`;
   const token = crypto.randomBytes(24).toString('base64url');
+  const galleryToken = crypto.randomBytes(24).toString('base64url');
   const settingKey = `persistence-test-${suffix}`;
   const fullName = `${suffix}.jpg`;
   const thumbName = `${suffix}.jpg`;
   const fullPath = path.join(assetRoot, 'full', fullName);
   const thumbPath = path.join(assetRoot, 'thumb', thumbName);
   let studentId;
+  let galleryStudentId;
   let batchId;
   let photoId;
 
@@ -75,6 +82,25 @@ test('MySQL state and file references survive schema re-initialization', {
        VALUES (?, ?, ?, ?, ?, ?)`
     ).run('Persistence', suffix, qrCode, token, Date.now(), Date.now());
     studentId = student.lastInsertRowid;
+    const importedGalleryStudent = await db.prepare(
+      `INSERT INTO students (ext_id, first_name, last_name, parent_email, qr_code, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(`gallery-${suffix}`, 'Gallery', suffix, 'family@example.test', `PD-2026-IMPORT-${suffix}`, Date.now());
+    galleryStudentId = importedGalleryStudent.lastInsertRowid;
+    const publicUrl = 'https://calcharterpicts.org';
+    const publishedGallery = await publishStudentRecord(db, galleryStudentId, 45, () => galleryToken, { info() {} });
+    assert.equal(publishedGallery.gallery_token, galleryToken);
+    assert.ok(publishedGallery.published_at, 'publish timestamp is persisted');
+    assert.ok(publishedGallery.expires_at > Date.now(), 'expiration is persisted in the future');
+    assert.equal((await galleryStudentByToken(db, galleryToken)).student.id, galleryStudentId);
+    assert.equal(galleryLink(publishedGallery.gallery_token, publicUrl), `${publicUrl}/g/${galleryToken}`);
+
+    await db.prepare('UPDATE students SET first_name = ? WHERE id = ?').run('Roster update', galleryStudentId);
+    const afterRosterUpdate = await db.prepare('SELECT * FROM students WHERE id = ?').get(galleryStudentId);
+    assert.equal(afterRosterUpdate.gallery_token, galleryToken, 'roster updates preserve publication token');
+    assert.equal(afterRosterUpdate.published_at, publishedGallery.published_at);
+    assert.equal(afterRosterUpdate.expires_at, publishedGallery.expires_at);
+
     const batch = await db.prepare('INSERT INTO batches (name, created_at) VALUES (?, ?)').run(`Batch ${suffix}`, Date.now());
     batchId = batch.lastInsertRowid;
     await db.prepare(
@@ -135,6 +161,10 @@ test('MySQL state and file references survive schema re-initialization', {
       'SELECT gallery_token FROM students WHERE id = ?'
     ).get(studentId);
     assert.equal(persistedStudent.gallery_token, token, 'student and gallery token persist');
+    const persistedGallery = await galleryStudentByToken(db, galleryToken);
+    assert.equal(persistedGallery.student.id, galleryStudentId, 'published gallery is found after reconnect');
+    assert.equal(persistedGallery.student.published_at > 0, true);
+    assert.equal(persistedGallery.student.expires_at > Date.now(), true);
     assert.deepEqual(databaseModule.getSetting(settingKey), { marker: suffix }, 'settings load from MySQL');
     assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM batches WHERE id = ?').get(batchId)).n, 1);
     assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM photos WHERE batch_id = ? AND student_id = ?').get(batchId, studentId)).n, 2);
@@ -162,6 +192,7 @@ test('MySQL state and file references survive schema re-initialization', {
     assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM batches WHERE id = ?').get(batchId)).n, 0);
 
     await db.prepare('DELETE FROM students WHERE id = ?').run(studentId);
+    await db.prepare('DELETE FROM students WHERE id = ?').run(galleryStudentId);
     await db.prepare('DELETE FROM users WHERE username = ?').run(username);
     await db.prepare('DELETE FROM settings WHERE `key` = ?').run(settingKey);
   } finally {
