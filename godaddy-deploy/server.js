@@ -616,6 +616,33 @@ function photoFilePath(directory, filename) {
   return path.join(directory, basename);
 }
 
+async function inspectPhotoFile(directory, filename) {
+  if (!filename) return { filename: filename || null, path: null, exists: false };
+
+  const filePath = photoFilePath(directory, filename);
+  try {
+    const stat = await fs.promises.stat(filePath);
+    return { filename, path: filePath, exists: stat.isFile() };
+  } catch (error) {
+    if (error.code === 'ENOENT') return { filename, path: filePath, exists: false };
+    throw error;
+  }
+}
+
+app.get('/api/admin/diagnostics/photo-248-storage', requireAdmin, ok(async (_req, res) => {
+  const photo = await db.prepare('SELECT id, file, thumb FROM photos WHERE id = ?').get(248);
+  if (!photo) return res.status(404).json({ error: 'Photo 248 not found.' });
+
+  res.json({
+    assetRoot: ASSET_ROOT,
+    fullDirectory: UP_FULL,
+    thumbnailDirectory: UP_THUMB,
+    photoId: photo.id,
+    file: await inspectPhotoFile(UP_FULL, photo.file),
+    thumb: await inspectPhotoFile(UP_THUMB, photo.thumb)
+  });
+}));
+
 async function removePhotoFiles(photos) {
   for (const photo of photos) {
     await fs.promises.rm(photoFilePath(UP_FULL, photo.file), { force: true });
