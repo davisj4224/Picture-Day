@@ -643,6 +643,31 @@ app.get('/api/admin/diagnostics/photo-248-storage', requireAdmin, ok(async (_req
   });
 }));
 
+const STORAGE_TEST_PATH = path.join(ASSET_ROOT, 'pictureday-storage-test.txt');
+const STORAGE_TEST_CONTENTS = 'Picture Day storage persistence test';
+
+async function readStorageTestFile() {
+  try {
+    const stat = await fs.promises.stat(STORAGE_TEST_PATH);
+    const contents = await fs.promises.readFile(STORAGE_TEST_PATH, 'utf8');
+    return { path: STORAGE_TEST_PATH, exists: stat.isFile(), contents };
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return { path: STORAGE_TEST_PATH, exists: false, contents: null };
+    }
+    throw error;
+  }
+}
+
+app.post('/api/admin/diagnostics/storage-write', requireAdmin, ok(async (_req, res) => {
+  await fs.promises.writeFile(STORAGE_TEST_PATH, STORAGE_TEST_CONTENTS, 'utf8');
+  res.json(await readStorageTestFile());
+}));
+
+app.get('/api/admin/diagnostics/storage-read', requireAdmin, ok(async (_req, res) => {
+  res.json(await readStorageTestFile());
+}));
+
 async function removePhotoFiles(photos) {
   for (const photo of photos) {
     await fs.promises.rm(photoFilePath(UP_FULL, photo.file), { force: true });
