@@ -78,7 +78,7 @@ read a deployed `.env` file.
 | `DB_NAME` | Automatically injected by GoDaddy |
 | `DB_USER` | Automatically injected by GoDaddy |
 | `DB_PASSWORD` | Automatically injected by GoDaddy |
-| `PICTUREDAY_ASSET_DIR` | Optional absolute path of GoDaddy's persistent public/assets `pictureday` root, if its mount differs from the default application path |
+| `PICTUREDAY_ASSET_DIR` | Optional path overriding the default GoDaddy persistent app-root `public/assets/pictureday` directory |
 
 Keep credentials in the hosting environment settings, never in source control.
 GoDaddy injects the database connection values; the app has no
@@ -89,7 +89,8 @@ first-run schema. Existing tables and records are never dropped or reseeded.
 ### Persistent uploaded files
 
 Configure the GoDaddy-supported persistent public/assets storage so the app
-can write these directories:
+can write these directories. With the deployed server in `/app/godaddy-deploy`,
+the default resolves to `/app/public/assets/pictureday`:
 
 ```
 public/assets/pictureday/full/
@@ -98,11 +99,13 @@ public/assets/pictureday/brand/
 ```
 
 If GoDaddy mounts persistent assets elsewhere, set `PICTUREDAY_ASSET_DIR` to
-the absolute path of the `pictureday` root that contains `full`, `thumb`, and
-`brand`. Give the Node.js application user read/write permission. Uploaded
-student photos are not exposed as unrestricted static assets: staff endpoints
-and the existing expiring gallery-token route serve them. Brand images continue
-to use the existing `/brand/<filename>` URL.
+the path of the `pictureday` root that contains `full`, `thumb`, and `brand`.
+Give the Node.js application user read/write permission. The app does not mount
+this persistent directory as Express static content: student photos are served
+through authenticated staff endpoints and the existing expiring
+gallery-token route. Do not configure a separate host-level static mapping for
+`full` or `thumb`, which would bypass those access checks. Brand images
+continue to use the existing `/brand/<filename>` URL.
 
 ### First Preview deployment and persistence check
 
@@ -117,10 +120,13 @@ to use the existing `/brand/<filename>` URL.
    `/api/admin/database-health`. It requires an authenticated administrator;
    `database: "connected"` and `schemaReady: true` confirm connectivity and all
    required tables. The response does not include connection details or users.
-4. Add a throwaway student and batch, upload a test image, and verify its
-   staff/gallery routes work. Restart Preview and confirm the account, student,
-   batch, photo, settings, and published gallery remain. Remove the throwaway
-   records and files in the app before loading the real roster.
+4. Preview and Publish share persistent asset storage. Do not upload a
+   throwaway image, delete photos, or run a persistence test that writes or
+   removes files from the Preview app while that storage is shared. Use the
+   local test suite, which uses temporary storage, for storage-path and
+   static-access regression checks. Only test photo persistence after GoDaddy
+   provides an asset location isolated from Publish; otherwise keep Preview
+   checks read-only and do not create or modify photo records.
 5. In Admin → Settings, set **Address families will use** to
    `https://calcharterpicts.org`; gallery email links use the saved `publicUrl`
    with the same `/g/<token>` path as before.

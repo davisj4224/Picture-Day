@@ -34,7 +34,7 @@ test('schema is additive and includes all persistent application tables', () => 
 });
 
 test('private photo files are guarded from static access and keep route-based access', () => {
-  assert.match(serverSource, /assets.*full\|thumb/);
+  assert.match(serverSource, /app\.use\(denyPhotoAssetStaticAccess\)/);
   assert.match(serverSource, /app\.get\('\/api\/photos\/:id\/file', requireStaff/);
   assert.match(serverSource, /app\.get\('\/api\/gallery\/:token\/photo\/:id'/);
   assert.match(serverSource, /app\.get\('\/api\/admin\/database-health', requireAdmin/);

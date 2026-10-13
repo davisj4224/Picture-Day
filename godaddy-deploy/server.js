@@ -25,6 +25,7 @@ const {
   galleryStudentForEmail,
   galleryLink: buildGalleryLink
 } = require('./lib/gallery.js');
+const { resolveAssetRoot, denyPhotoAssetStaticAccess } = require('./lib/photo-storage.js');
 
 
 
@@ -83,7 +84,7 @@ class MySqlSessionStore extends session.Store {
 }
 const ROOT = __dirname;
 const VIEWS = path.join(ROOT, 'views');
-const ASSET_ROOT = path.resolve(process.env.PICTUREDAY_ASSET_DIR || path.join(ROOT, 'public', 'assets', 'pictureday'));
+const ASSET_ROOT = resolveAssetRoot(ROOT, process.env.PICTUREDAY_ASSET_DIR);
 const UP_FULL = path.join(ASSET_ROOT, 'full');
 const UP_THUMB = path.join(ASSET_ROOT, 'thumb');
 const UP_BRAND = path.join(ASSET_ROOT, 'brand');
@@ -211,10 +212,7 @@ app.get('/change-password', requireUser, page('change-password.html'));
 app.get('/design', requireUser, page('design.html'));
 app.get('/g/:token', page('gallery.html'));
 
-app.use((req, res, next) => {
-  if (/^\/assets\/pictureday\/(?:full|thumb)(?:\/|$)/.test(req.path)) return res.sendStatus(404);
-  next();
-});
+app.use(denyPhotoAssetStaticAccess);
 app.use('/assets', express.static(path.join(ROOT, 'public'), { maxAge: '1h' }));
 
 /* ----------------------------------------------------------------- auth */
