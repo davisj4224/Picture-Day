@@ -107,6 +107,13 @@ gallery-token route. Do not configure a separate host-level static mapping for
 `full` or `thumb`, which would bypass those access checks. Brand images
 continue to use the existing `/brand/<filename>` URL.
 
+The admin-only, read-only `GET /api/admin/diagnostics/storage-filesystem`
+reports the resolved asset root, whether `/private` and
+`/private/pictureday` are directories, available mount metadata for `/private`,
+and filesystem device IDs for `/private` and `/app`. It omits mount sources and
+raw mount records. This describes the current process view and does not prove
+storage will persist across a restart, redeployment, or host replacement.
+
 ### First Preview deployment and persistence check
 
 1. Create/select the GoDaddy managed MySQL database and user. Give the user full

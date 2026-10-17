@@ -16,6 +16,7 @@ const QRCode = require('qrcode');
 const { parse: parseCsv } = require('csv-parse/sync');
 
 const { db, initialize, config, branding, setSetting, newQrCode, newGalleryToken, DEFAULT_BRANDING } = require('./lib/db.js');
+const { requireAdmin } = require('./lib/admin-auth.js');
 const cards = require('./lib/cards.js');
 const mail = require('./lib/mail.js');
 const {
@@ -25,7 +26,11 @@ const {
   galleryStudentForEmail,
   galleryLink: buildGalleryLink
 } = require('./lib/gallery.js');
-const { resolveAssetRoot, denyPhotoAssetStaticAccess } = require('./lib/photo-storage.js');
+const {
+  resolveAssetRoot,
+  inspectFilesystemMetadata,
+  denyPhotoAssetStaticAccess
+} = require('./lib/photo-storage.js');
 
 
 
@@ -163,7 +168,6 @@ function userCount() {
   return db.prepare('SELECT COUNT(*) n FROM users').get().then((row) => Number(row.n));
 }
 const isStaff = (req) => ['staff', 'admin'].includes(req.session?.user?.role);
-const isAdmin = (req) => req.session?.user?.role === 'admin';
 const isSignedIn = (req) => Boolean(req.session?.user);
 
 function requireStaff(req, res, next) {
@@ -178,11 +182,6 @@ function requireStaff(req, res, next) {
   return next();
 }
 
-function requireAdmin(req, res, next) {
-  if (isAdmin(req)) return next();
-  if (req.path.startsWith('/api/')) return res.status(403).json({ error: 'Administrator access is required.' });
-  return res.redirect('/login');
-}
 function requireUser(req, res, next) {
   if (isSignedIn(req)) return next();
   if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Sign in first.' });
@@ -664,6 +663,10 @@ app.post('/api/admin/diagnostics/storage-write', requireAdmin, ok(async (_req, r
 
 app.get('/api/admin/diagnostics/storage-read', requireAdmin, ok(async (_req, res) => {
   res.json(await readStorageTestFile());
+}));
+
+app.get('/api/admin/diagnostics/storage-filesystem', requireAdmin, ok(async (_req, res) => {
+  res.json(await inspectFilesystemMetadata(ASSET_ROOT));
 }));
 
 async function removePhotoFiles(photos) {

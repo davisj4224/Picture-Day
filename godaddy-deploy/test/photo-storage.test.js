@@ -6,7 +6,12 @@ const os = require('node:os');
 const path = require('node:path');
 const { test } = require('node:test');
 const express = require('express');
-const { denyPhotoAssetStaticAccess, resolveAssetRoot } = require('../lib/photo-storage');
+const { requireAdmin } = require('../lib/admin-auth');
+const {
+  denyPhotoAssetStaticAccess,
+  inspectFilesystemMetadata,
+  resolveAssetRoot
+} = require('../lib/photo-storage');
 
 const appRoot = path.join(path.sep, 'app', 'godaddy-deploy');
 const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
@@ -20,6 +25,73 @@ test('default photo asset root resolves to app-root persistent storage', () => {
 
 test('PICTUREDAY_ASSET_DIR overrides the default photo asset root', () => {
   assert.equal(resolveAssetRoot(appRoot, '/mnt/persistent/pictureday'), '/mnt/persistent/pictureday');
+});
+
+test('filesystem metadata reports the resolved root, nearest mount, and device IDs without source details', async () => {
+  const statResults = {
+    '/private': { isDirectory: () => true, dev: 12 },
+    '/private/pictureday': { isDirectory: () => true, dev: 12 },
+    '/app': { isDirectory: () => true, dev: 34 }
+  };
+  const mountInfo = [
+    '1 0 8:1 / / rw - ext4 /dev/root rw',
+    '2 1 8:2 / /private rw - xfs /dev/private rw',
+    '3 2 8:3 / /private/pictureday rw - tmpfs secret-source rw'
+  ].join('\n');
+  const result = await inspectFilesystemMetadata('/private/pictureday', {
+    stat: async (targetPath) => statResults[targetPath],
+    readFile: async () => mountInfo
+  });
+
+  assert.deepEqual(result, {
+    assetRoot: '/private/pictureday',
+    directories: {
+      private: { exists: true, isDirectory: true, error: null },
+      privatePictureday: { exists: true, isDirectory: true, error: null }
+    },
+    mount: {
+      private: {
+        available: true,
+        mountPoint: '/private',
+        filesystemType: 'xfs',
+        device: '8:2'
+      }
+    },
+    devices: {
+      private: { available: true, device: '12', reason: null },
+      app: { available: true, device: '34', reason: null }
+    }
+  });
+  assert.equal(JSON.stringify(result).includes('/dev/private'), false);
+  assert.equal(JSON.stringify(result).includes('secret-source'), false);
+});
+
+test('filesystem metadata reports missing paths and unreadable mount information safely', async () => {
+  const missingPath = Object.assign(new Error('private path missing'), { code: 'ENOENT' });
+  const denied = Object.assign(new Error('sensitive details'), { code: 'EACCES' });
+  const result = await inspectFilesystemMetadata('/configured/assets', {
+    stat: async (targetPath) => {
+      if (targetPath === '/app') return { isDirectory: () => true, dev: 34 };
+      throw missingPath;
+    },
+    readFile: async () => {
+      throw denied;
+    }
+  });
+
+  assert.deepEqual(result, {
+    assetRoot: '/configured/assets',
+    directories: {
+      private: { exists: false, isDirectory: false, error: 'not_found' },
+      privatePictureday: { exists: false, isDirectory: false, error: 'not_found' }
+    },
+    mount: { private: { available: false, reason: 'permission_denied' } },
+    devices: {
+      private: { available: false, device: null, reason: 'not_found' },
+      app: { available: true, device: '34', reason: null }
+    }
+  });
+  assert.equal(JSON.stringify(result).includes('sensitive details'), false);
 });
 
 test('Express returns 404 for direct full-photo and thumbnail asset requests', async () => {
@@ -56,6 +128,49 @@ test('Express returns 404 for direct full-photo and thumbnail asset requests', a
   } finally {
     await fs.promises.rm(temporaryRoot, { recursive: true, force: true });
   }
+});
+
+test('filesystem diagnostic requires admin authorization and is a read-only GET route', async () => {
+  const diagnosticPath = '/api/admin/diagnostics/storage-filesystem';
+  const app = express();
+  let handlerCalls = 0;
+  app.use((req, _res, next) => {
+    const role = req.get('x-test-role');
+    req.session = role ? { user: { role } } : {};
+    next();
+  });
+  app.get(diagnosticPath, requireAdmin, (_req, res) => {
+    handlerCalls++;
+    res.json({ ok: true });
+  });
+
+  const listener = await new Promise((resolve, reject) => {
+    const instance = app.listen(0, '127.0.0.1', () => resolve(instance));
+    instance.once('error', reject);
+  });
+
+  try {
+    const { port } = listener.address();
+    const anonymousResponse = await fetch(`http://127.0.0.1:${port}${diagnosticPath}`);
+    assert.equal(anonymousResponse.status, 403);
+
+    const adminResponse = await fetch(`http://127.0.0.1:${port}${diagnosticPath}`, {
+      headers: { 'x-test-role': 'admin' }
+    });
+    assert.equal(adminResponse.status, 200);
+    assert.deepEqual(await adminResponse.json(), { ok: true });
+    assert.equal(handlerCalls, 1);
+  } finally {
+    await new Promise((resolve, reject) => {
+      listener.close((error) => error ? reject(error) : resolve());
+    });
+  }
+
+  assert.match(
+    serverSource,
+    /app\.get\('\/api\/admin\/diagnostics\/storage-filesystem', requireAdmin, ok\(async \(_req, res\) => \{\s*res\.json\(await inspectFilesystemMetadata\(ASSET_ROOT\)\)/
+  );
+  assert.doesNotMatch(serverSource, /app\.post\('\/api\/admin\/diagnostics\/storage-filesystem'/);
 });
 
 test('photo file routes keep their staff and gallery authorization guards', () => {
