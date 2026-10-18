@@ -114,6 +114,12 @@ and filesystem device IDs for `/private` and `/app`. It omits mount sources and
 raw mount records. This describes the current process view and does not prove
 storage will persist across a restart, redeployment, or host replacement.
 
+The admin-only, read-only `GET /api/admin/diagnostics/photo-file-audit` checks
+each photo record's stored full-size and thumbnail filenames under the resolved
+asset root. It returns only the total photo count, found/missing counts for
+each file type, and the asset root; it does not return filenames or student
+information and does not modify files or database records.
+
 ### First Preview deployment and persistence check
 
 1. Create/select the GoDaddy managed MySQL database and user. Give the user full

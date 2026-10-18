@@ -9,6 +9,7 @@ const express = require('express');
 const { requireAdmin } = require('../lib/admin-auth');
 const {
   denyPhotoAssetStaticAccess,
+  auditPhotoFiles,
   inspectFilesystemMetadata,
   resolveAssetRoot
 } = require('../lib/photo-storage');
@@ -94,6 +95,48 @@ test('filesystem metadata reports missing paths and unreadable mount information
   assert.equal(JSON.stringify(result).includes('sensitive details'), false);
 });
 
+test('photo file audit returns only aggregate presence counts for stored file and thumbnail names', async () => {
+  const temporaryRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pictureday-photo-audit-test-'));
+  const assetRoot = path.join(temporaryRoot, 'assets');
+  const fullDirectory = path.join(assetRoot, 'full');
+  const thumbDirectory = path.join(assetRoot, 'thumb');
+  await fs.promises.mkdir(fullDirectory, { recursive: true });
+  await fs.promises.mkdir(thumbDirectory, { recursive: true });
+  await fs.promises.writeFile(path.join(fullDirectory, 'present-full.jpg'), 'full');
+  await fs.promises.writeFile(path.join(fullDirectory, 'no-thumbnail.jpg'), 'full');
+  await fs.promises.writeFile(path.join(thumbDirectory, 'present-thumb.jpg'), 'thumb');
+  const photos = [
+    { file: 'present-full.jpg', thumb: 'present-thumb.jpg' },
+    { file: 'missing-full.jpg', thumb: 'missing-thumb.jpg' },
+    { file: 'no-thumbnail.jpg', thumb: null }
+  ];
+  const db = {
+    prepare(sql) {
+      assert.equal(sql, 'SELECT file, thumb FROM photos');
+      return { all: async () => photos };
+    }
+  };
+
+  try {
+    const result = await auditPhotoFiles(db, assetRoot);
+    assert.deepEqual(result, {
+      totalPhotos: 3,
+      fullSizeFilesFound: 2,
+      fullSizeFilesMissing: 1,
+      thumbnailsFound: 1,
+      thumbnailsMissing: 2,
+      assetRoot
+    });
+    for (const filename of ['present-full.jpg', 'missing-full.jpg', 'present-thumb.jpg', 'missing-thumb.jpg']) {
+      assert.equal(JSON.stringify(result).includes(filename), false);
+    }
+    assert.equal(await fs.promises.readFile(path.join(fullDirectory, 'present-full.jpg'), 'utf8'), 'full');
+    assert.equal(await fs.promises.readFile(path.join(thumbDirectory, 'present-thumb.jpg'), 'utf8'), 'thumb');
+  } finally {
+    await fs.promises.rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
 test('Express returns 404 for direct full-photo and thumbnail asset requests', async () => {
   const temporaryRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pictureday-static-test-'));
   const publicDirectory = path.join(temporaryRoot, 'public');
@@ -169,6 +212,10 @@ test('filesystem diagnostic requires admin authorization and is a read-only GET 
   assert.match(
     serverSource,
     /app\.get\('\/api\/admin\/diagnostics\/storage-filesystem', requireAdmin, ok\(async \(_req, res\) => \{\s*res\.json\(await inspectFilesystemMetadata\(ASSET_ROOT\)\)/
+  );
+  assert.match(
+    serverSource,
+    /app\.get\('\/api\/admin\/diagnostics\/photo-file-audit', requireAdmin, ok\(async \(_req, res\) => \{\s*res\.json\(await auditPhotoFiles\(db, ASSET_ROOT\)\)/
   );
   assert.doesNotMatch(serverSource, /app\.post\('\/api\/admin\/diagnostics\/storage-filesystem'/);
 });

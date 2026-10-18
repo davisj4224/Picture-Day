@@ -28,6 +28,8 @@ const {
 } = require('./lib/gallery.js');
 const {
   resolveAssetRoot,
+  photoFilePath,
+  auditPhotoFiles,
   inspectFilesystemMetadata,
   denyPhotoAssetStaticAccess
 } = require('./lib/photo-storage.js');
@@ -607,12 +609,6 @@ app.get('/api/batches', requireStaff, ok(async (req, res) =>
   )
 ));
 
-function photoFilePath(directory, filename) {
-  const basename = path.basename(filename || '');
-  if (!basename || basename !== filename) throw new Error('Invalid stored photo filename.');
-  return path.join(directory, basename);
-}
-
 async function inspectPhotoFile(directory, filename) {
   if (!filename) return { filename: filename || null, path: null, exists: false };
 
@@ -667,6 +663,10 @@ app.get('/api/admin/diagnostics/storage-read', requireAdmin, ok(async (_req, res
 
 app.get('/api/admin/diagnostics/storage-filesystem', requireAdmin, ok(async (_req, res) => {
   res.json(await inspectFilesystemMetadata(ASSET_ROOT));
+}));
+
+app.get('/api/admin/diagnostics/photo-file-audit', requireAdmin, ok(async (_req, res) => {
+  res.json(await auditPhotoFiles(db, ASSET_ROOT));
 }));
 
 async function removePhotoFiles(photos) {

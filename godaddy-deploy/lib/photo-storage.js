@@ -7,6 +7,46 @@ function resolveAssetRoot(appRoot, assetDirectory) {
   return path.resolve(assetDirectory || path.join(appRoot, '..', 'public', 'assets', 'pictureday'));
 }
 
+function photoFilePath(directory, filename) {
+  const basename = path.basename(filename || '');
+  if (!basename || basename !== filename) throw new Error('Invalid stored photo filename.');
+  return path.join(directory, basename);
+}
+
+async function isPhotoFilePresent(directory, filename) {
+  if (!filename) return false;
+
+  try {
+    return (await fs.promises.stat(photoFilePath(directory, filename))).isFile();
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false;
+    throw error;
+  }
+}
+
+async function auditPhotoFiles(db, assetRoot) {
+  const photos = await db.prepare('SELECT file, thumb FROM photos').all();
+  const counts = {
+    totalPhotos: photos.length,
+    fullSizeFilesFound: 0,
+    fullSizeFilesMissing: 0,
+    thumbnailsFound: 0,
+    thumbnailsMissing: 0,
+    assetRoot
+  };
+
+  for (const photo of photos) {
+    const [fullSizeFound, thumbnailFound] = await Promise.all([
+      isPhotoFilePresent(path.join(assetRoot, 'full'), photo.file),
+      isPhotoFilePresent(path.join(assetRoot, 'thumb'), photo.thumb)
+    ]);
+    counts[fullSizeFound ? 'fullSizeFilesFound' : 'fullSizeFilesMissing']++;
+    counts[thumbnailFound ? 'thumbnailsFound' : 'thumbnailsMissing']++;
+  }
+
+  return counts;
+}
+
 function filesystemErrorReason(error) {
   if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return 'not_found';
   if (error.code === 'EACCES' || error.code === 'EPERM') return 'permission_denied';
@@ -127,6 +167,8 @@ function denyPhotoAssetStaticAccess(req, res, next) {
 
 module.exports = {
   resolveAssetRoot,
+  photoFilePath,
+  auditPhotoFiles,
   inspectFilesystemMetadata,
   denyPhotoAssetStaticAccess
 };
