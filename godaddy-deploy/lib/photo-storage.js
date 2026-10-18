@@ -3,6 +3,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+const LEGACY_ASSET_ROOTS = Object.freeze([
+  '/app/public/assets/pictureday',
+  '/app/godaddy-deploy/public/assets/pictureday'
+]);
+
 function resolveAssetRoot(appRoot, assetDirectory) {
   return path.resolve(assetDirectory || path.join(appRoot, '..', 'public', 'assets', 'pictureday'));
 }
@@ -24,7 +29,42 @@ async function isPhotoFilePresent(directory, filename) {
   }
 }
 
-async function auditPhotoFiles(db, assetRoot) {
+async function directoryExists(directory) {
+  try {
+    return (await fs.promises.stat(directory)).isDirectory();
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false;
+    throw error;
+  }
+}
+
+async function countPhotoFiles(directory, photos, filenameProperty) {
+  let count = 0;
+  for (const photo of photos) {
+    if (await isPhotoFilePresent(directory, photo[filenameProperty])) count++;
+  }
+  return count;
+}
+
+async function inspectPhotoStorageLocation(photos, assetRoot) {
+  const fullDirectory = path.join(assetRoot, 'full');
+  const thumbDirectory = path.join(assetRoot, 'thumb');
+  const [exists, fullExists, thumbExists, fullSizeFilesFound, thumbnailsFound] = await Promise.all([
+    directoryExists(assetRoot),
+    directoryExists(fullDirectory),
+    directoryExists(thumbDirectory),
+    countPhotoFiles(fullDirectory, photos, 'file'),
+    countPhotoFiles(thumbDirectory, photos, 'thumb')
+  ]);
+
+  return {
+    exists,
+    full: { exists: fullExists, matchingFiles: fullSizeFilesFound },
+    thumb: { exists: thumbExists, matchingFiles: thumbnailsFound }
+  };
+}
+
+async function auditPhotoFiles(db, assetRoot, { legacyAssetRoots = LEGACY_ASSET_ROOTS } = {}) {
   const photos = await db.prepare('SELECT file, thumb FROM photos').all();
   const counts = {
     totalPhotos: photos.length,
@@ -35,14 +75,16 @@ async function auditPhotoFiles(db, assetRoot) {
     assetRoot
   };
 
-  for (const photo of photos) {
-    const [fullSizeFound, thumbnailFound] = await Promise.all([
-      isPhotoFilePresent(path.join(assetRoot, 'full'), photo.file),
-      isPhotoFilePresent(path.join(assetRoot, 'thumb'), photo.thumb)
-    ]);
-    counts[fullSizeFound ? 'fullSizeFilesFound' : 'fullSizeFilesMissing']++;
-    counts[thumbnailFound ? 'thumbnailsFound' : 'thumbnailsMissing']++;
-  }
+  const selectedLocation = await inspectPhotoStorageLocation(photos, assetRoot);
+  counts.fullSizeFilesFound = selectedLocation.full.matchingFiles;
+  counts.fullSizeFilesMissing = photos.length - counts.fullSizeFilesFound;
+  counts.thumbnailsFound = selectedLocation.thumb.matchingFiles;
+  counts.thumbnailsMissing = photos.length - counts.thumbnailsFound;
+  counts.locations = {
+    selectedAssetRoot: selectedLocation,
+    legacyAppPublicAssets: await inspectPhotoStorageLocation(photos, legacyAssetRoots[0]),
+    legacyGoDaddyDeployPublicAssets: await inspectPhotoStorageLocation(photos, legacyAssetRoots[1])
+  };
 
   return counts;
 }
@@ -168,6 +210,7 @@ function denyPhotoAssetStaticAccess(req, res, next) {
 module.exports = {
   resolveAssetRoot,
   photoFilePath,
+  LEGACY_ASSET_ROOTS,
   auditPhotoFiles,
   inspectFilesystemMetadata,
   denyPhotoAssetStaticAccess

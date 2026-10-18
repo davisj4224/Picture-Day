@@ -117,8 +117,12 @@ storage will persist across a restart, redeployment, or host replacement.
 The admin-only, read-only `GET /api/admin/diagnostics/photo-file-audit` checks
 each photo record's stored full-size and thumbnail filenames under the resolved
 asset root. It returns only the total photo count, found/missing counts for
-each file type, and the asset root; it does not return filenames or student
-information and does not modify files or database records.
+each file type, and the asset root. It also reports whether the selected root
+and the legacy `/app/public/assets/pictureday` and
+`/app/godaddy-deploy/public/assets/pictureday` roots (including each root's
+`full` and `thumb` directories) exist, plus aggregate matching-file counts for
+those subdirectories. It does not return filenames or student information and
+does not modify files or database records.
 
 ### First Preview deployment and persistence check
 

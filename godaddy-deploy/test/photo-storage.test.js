@@ -11,6 +11,7 @@ const {
   denyPhotoAssetStaticAccess,
   auditPhotoFiles,
   inspectFilesystemMetadata,
+  LEGACY_ASSET_ROOTS,
   resolveAssetRoot
 } = require('../lib/photo-storage');
 
@@ -98,6 +99,7 @@ test('filesystem metadata reports missing paths and unreadable mount information
 test('photo file audit returns only aggregate presence counts for stored file and thumbnail names', async () => {
   const temporaryRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pictureday-photo-audit-test-'));
   const assetRoot = path.join(temporaryRoot, 'assets');
+  const legacyAssetRoots = [path.join(temporaryRoot, 'legacy-app'), path.join(temporaryRoot, 'legacy-deploy')];
   const fullDirectory = path.join(assetRoot, 'full');
   const thumbDirectory = path.join(assetRoot, 'thumb');
   await fs.promises.mkdir(fullDirectory, { recursive: true });
@@ -118,20 +120,112 @@ test('photo file audit returns only aggregate presence counts for stored file an
   };
 
   try {
-    const result = await auditPhotoFiles(db, assetRoot);
+    const result = await auditPhotoFiles(db, assetRoot, { legacyAssetRoots });
     assert.deepEqual(result, {
       totalPhotos: 3,
       fullSizeFilesFound: 2,
       fullSizeFilesMissing: 1,
       thumbnailsFound: 1,
       thumbnailsMissing: 2,
-      assetRoot
+      assetRoot,
+      locations: {
+        selectedAssetRoot: {
+          exists: true,
+          full: { exists: true, matchingFiles: 2 },
+          thumb: { exists: true, matchingFiles: 1 }
+        },
+        legacyAppPublicAssets: {
+          exists: false,
+          full: { exists: false, matchingFiles: 0 },
+          thumb: { exists: false, matchingFiles: 0 }
+        },
+        legacyGoDaddyDeployPublicAssets: {
+          exists: false,
+          full: { exists: false, matchingFiles: 0 },
+          thumb: { exists: false, matchingFiles: 0 }
+        }
+      }
     });
     for (const filename of ['present-full.jpg', 'missing-full.jpg', 'present-thumb.jpg', 'missing-thumb.jpg']) {
       assert.equal(JSON.stringify(result).includes(filename), false);
     }
     assert.equal(await fs.promises.readFile(path.join(fullDirectory, 'present-full.jpg'), 'utf8'), 'full');
     assert.equal(await fs.promises.readFile(path.join(thumbDirectory, 'present-thumb.jpg'), 'utf8'), 'thumb');
+  } finally {
+    await fs.promises.rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('photo file audit checks both legacy roots without returning paths or filenames', async () => {
+  assert.deepEqual(LEGACY_ASSET_ROOTS, [
+    '/app/public/assets/pictureday',
+    '/app/godaddy-deploy/public/assets/pictureday'
+  ]);
+
+  const temporaryRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pictureday-legacy-audit-test-'));
+  const assetRoot = path.join(temporaryRoot, 'selected');
+  const legacyAssetRoots = [
+    path.join(temporaryRoot, 'legacy-app', 'public', 'assets', 'pictureday'),
+    path.join(temporaryRoot, 'legacy-deploy', 'public', 'assets', 'pictureday')
+  ];
+  const photos = [
+    {
+      file: 'private-student-photo.jpg',
+      thumb: 'private-student-thumbnail.jpg',
+      student_name: 'Private Student'
+    },
+    { file: 'missing-private-photo.jpg', thumb: 'missing-private-thumbnail.jpg' }
+  ];
+  let queryCount = 0;
+  const db = {
+    prepare(sql) {
+      assert.equal(sql, 'SELECT file, thumb FROM photos');
+      queryCount++;
+      return { all: async () => photos };
+    }
+  };
+  const firstFullDirectory = path.join(legacyAssetRoots[0], 'full');
+  const secondThumbDirectory = path.join(legacyAssetRoots[1], 'thumb');
+  await fs.promises.mkdir(firstFullDirectory, { recursive: true });
+  await fs.promises.mkdir(secondThumbDirectory, { recursive: true });
+  await fs.promises.writeFile(path.join(firstFullDirectory, photos[0].file), 'unchanged full photo');
+  await fs.promises.writeFile(path.join(secondThumbDirectory, photos[0].thumb), 'unchanged thumbnail');
+
+  try {
+    const result = await auditPhotoFiles(db, assetRoot, { legacyAssetRoots });
+    assert.deepEqual(result.locations, {
+      selectedAssetRoot: {
+        exists: false,
+        full: { exists: false, matchingFiles: 0 },
+        thumb: { exists: false, matchingFiles: 0 }
+      },
+      legacyAppPublicAssets: {
+        exists: true,
+        full: { exists: true, matchingFiles: 1 },
+        thumb: { exists: false, matchingFiles: 0 }
+      },
+      legacyGoDaddyDeployPublicAssets: {
+        exists: true,
+        full: { exists: false, matchingFiles: 0 },
+        thumb: { exists: true, matchingFiles: 1 }
+      }
+    });
+    assert.equal(queryCount, 1);
+    const responseBody = JSON.stringify(result);
+    for (const filename of photos.flatMap(({ file, thumb }) => [file, thumb])) {
+      assert.equal(responseBody.includes(filename), false);
+    }
+    assert.equal(responseBody.includes(legacyAssetRoots[0]), false);
+    assert.equal(responseBody.includes(legacyAssetRoots[1]), false);
+    assert.equal(responseBody.includes('Private Student'), false);
+    assert.equal(
+      await fs.promises.readFile(path.join(firstFullDirectory, photos[0].file), 'utf8'),
+      'unchanged full photo'
+    );
+    assert.equal(
+      await fs.promises.readFile(path.join(secondThumbDirectory, photos[0].thumb), 'utf8'),
+      'unchanged thumbnail'
+    );
   } finally {
     await fs.promises.rm(temporaryRoot, { recursive: true, force: true });
   }
