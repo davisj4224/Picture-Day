@@ -1,2 +1,0 @@
-https://<repo-name>-<random>-3000.app.github.dev/
-npm start
