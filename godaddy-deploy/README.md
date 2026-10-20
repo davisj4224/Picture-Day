@@ -52,11 +52,11 @@ This application requires GoDaddy hosting with **Setup Node.js App** or
 **Application Manager** in cPanel. GoDaddy domain-only and static Website
 Builder plans cannot run it.
 
-This directory is the deployable copy tracked in the GitHub repository. In
-cPanel, check out the repository with Git Version Control and set the Node.js
-application root to the checkout's `godaddy-deploy` directory. Use Node 22,
-set the startup file to `server.js`, install production dependencies in
-that directory, then restart the application after pulling a new commit.
+For the current Published setup, GoDaddy starts from the repository root
+(`/app`): its `npm start` runs the root `server.js`, which loads this directory's
+`server.js`. Keep the repository root as the Node.js application root, use
+Node 22, install the root package dependencies, and restart after pulling a new
+commit. Do not change the app root to `godaddy-deploy` for this deployment.
 
 Set `NODE_ENV=production`, `SECURE_COOKIES=true`, and a long random
 `SESSION_SECRET` in the application's environment variables. Do not commit or
@@ -78,7 +78,7 @@ read a deployed `.env` file.
 | `DB_NAME` | Automatically injected by GoDaddy |
 | `DB_USER` | Automatically injected by GoDaddy |
 | `DB_PASSWORD` | Automatically injected by GoDaddy |
-| `PICTUREDAY_ASSET_DIR` | Optional path overriding the default GoDaddy persistent app-root `public/assets/pictureday` directory |
+| `PICTUREDAY_ASSET_DIR` | Persistent asset root; set to `/private/pictureday` (the production fallback if unset) |
 
 Keep credentials in the hosting environment settings, never in source control.
 GoDaddy injects the database connection values; the app has no
@@ -88,31 +88,50 @@ first-run schema. Existing tables and records are never dropped or reseeded.
 
 ### Persistent uploaded files
 
-Configure the GoDaddy-supported persistent public/assets storage so the app
-can write these directories. With the deployed server in `/app/godaddy-deploy`,
-the default resolves to `/app/public/assets/pictureday`:
+The app creates and checks these subdirectories at startup. In production,
+they are rooted at `/private/pictureday` unless `PICTUREDAY_ASSET_DIR` specifies
+another path:
 
 ```
-public/assets/pictureday/full/
-public/assets/pictureday/thumb/
-public/assets/pictureday/brand/
+/private/pictureday/full/
+/private/pictureday/thumb/
+/private/pictureday/brand/
 ```
 
-If GoDaddy mounts persistent assets elsewhere, set `PICTUREDAY_ASSET_DIR` to
-the path of the `pictureday` root that contains `full`, `thumb`, and `brand`.
-Give the Node.js application user read/write permission. The app does not mount
+Set `PICTUREDAY_ASSET_DIR` to the persistent `pictureday` root containing
+`full`, `thumb`, and `brand`, and give the Node.js application user read/write
+permission. The app logs the resolved path and its existence/write-access
+status at startup; a writable result does not establish that the volume is
+persistent. The admin-only `POST /api/admin/diagnostics/storage-write` writes a
+harmless test file. After restarting the app without redeploying, use the
+admin-only `GET /api/admin/diagnostics/storage-read` to check whether that file
+and its contents remain. This verifies survival across that restart only, not
+across a future deployment. The read endpoint does not create or rewrite the
+test file. The app does not mount
 this persistent directory as Express static content: student photos are served
 through authenticated staff endpoints and the existing expiring
 gallery-token route. Do not configure a separate host-level static mapping for
 `full` or `thumb`, which would bypass those access checks. Brand images
 continue to use the existing `/brand/<filename>` URL.
 
+When serving a photo, the app checks the configured asset root first, then
+checks matching filenames in the legacy `/app/public/assets/pictureday` and
+`/app/godaddy-deploy/public/assets/pictureday` locations. Full-size files and
+thumbnails are resolved independently, so either may be served from a legacy
+location if it is absent from the configured root. Legacy files are returned
+only through the same staff-authenticated or expiring gallery-token routes;
+the known legacy public asset paths for `full` and `thumb` remain blocked from
+static access. This fallback reads existing files and does not move or restore
+them.
+
 The admin-only, read-only `GET /api/admin/diagnostics/storage-filesystem`
 reports the resolved asset root, whether `/private` and
-`/private/pictureday` are directories, available mount metadata for `/private`,
-and filesystem device IDs for `/private` and `/app`. It omits mount sources and
-raw mount records. This describes the current process view and does not prove
-storage will persist across a restart, redeployment, or host replacement.
+`/private/pictureday` are directories, the nearest available mount metadata for
+`/private`, and filesystem device IDs for `/private` and `/app`. Unavailable
+metadata is reported with a limited reason code; mount sources and raw mount
+records are not returned. These results describe the running process's current
+filesystem view only. They cannot prove that storage survives an app restart,
+redeployment, or host replacement.
 
 The admin-only, read-only `GET /api/admin/diagnostics/photo-file-audit` checks
 each photo record's stored full-size and thumbnail filenames under the resolved
@@ -123,6 +142,50 @@ and the legacy `/app/public/assets/pictureday` and
 `full` and `thumb` directories) exist, plus aggregate matching-file counts for
 those subdirectories. It does not return filenames or student information and
 does not modify files or database records.
+
+### Restoring missing photo files
+
+`sharp` is used by the one-time `scripts/restore-photos.js` utility to make
+server-side JPEG thumbnails with the upload preview's 520-pixel maximum side
+and quality 72. The utility reads photo IDs and stored filenames with a
+read-only `SELECT`; it never writes to the database. It does not call the normal
+upload endpoint or alter photo, student, QR, or gallery records.
+
+Prepare a JSON manifest containing exactly one explicit source mapping for
+every existing photo ID. Paths are relative to the manifest file unless
+absolute:
+
+```json
+{
+  "photos": [
+    { "photoId": 248, "source": "originals/IMG_0001.JPG" }
+  ]
+}
+```
+
+Do not infer mappings from the `photos.original` column. Check the source
+directory and manifest carefully: every database photo record must be mapped,
+photo IDs and resolved source files must be unique, and each image format must
+match the extension of the record's stored `file` name. The utility uses each
+record's stored `file` and `thumb` values under the configured persistent
+asset root (`full/` and `thumb/`). Existing targets are never overwritten.
+
+From this directory, with the intended database environment variables
+configured, run a dry-run (the default; `--dry-run` is explicit):
+
+```sh
+node scripts/restore-photos.js --manifest /secure/path/photo-restore-manifest.json --dry-run
+```
+
+Review the complete JSON report before considering a restore. A successful
+preflight has `"ready": true`, no entries in `"errors"` or `"failed"`, and a
+`"wouldRestore"` entry for every manifest mapping. Missing database mappings,
+unknown or duplicate IDs, duplicated/ambiguous sources, unsupported images,
+invalid stored paths, missing asset directories, and existing destinations
+make the run fail before any files are written. The report identifies photo
+IDs and the reason for each skipped or failed item. A restore requires an
+explicit `--apply`; do not use that option until the dry-run has been reviewed
+and the restore is approved.
 
 ### First Preview deployment and persistence check
 

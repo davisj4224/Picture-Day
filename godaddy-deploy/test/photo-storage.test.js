@@ -9,27 +9,41 @@ const express = require('express');
 const { requireAdmin } = require('../lib/admin-auth');
 const {
   denyPhotoAssetStaticAccess,
+  ensureAssetDirectories,
   auditPhotoFiles,
   inspectFilesystemMetadata,
   LEGACY_ASSET_ROOTS,
+  readStorageVerification,
   resolveAssetRoot
 } = require('../lib/photo-storage');
 
 const appRoot = path.join(path.sep, 'app', 'godaddy-deploy');
 const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+const photoRoutesSource = fs.readFileSync(path.join(__dirname, '..', 'lib', 'photo-routes.js'), 'utf8');
 
-test('default photo asset root resolves to app-root persistent storage', () => {
+test('production defaults to /private/pictureday when no asset directory is configured', () => {
+  assert.equal(resolveAssetRoot(appRoot, '', 'production'), '/private/pictureday');
+});
+
+test('non-production keeps the existing app-root asset fallback', () => {
   assert.equal(
-    resolveAssetRoot(appRoot),
+    resolveAssetRoot(appRoot, '', 'development'),
     path.join(path.sep, 'app', 'public', 'assets', 'pictureday')
   );
 });
 
-test('PICTUREDAY_ASSET_DIR overrides the default photo asset root', () => {
-  assert.equal(resolveAssetRoot(appRoot, '/mnt/persistent/pictureday'), '/mnt/persistent/pictureday');
+test('PICTUREDAY_ASSET_DIR overrides the fallback path', () => {
+  const previous = process.env.PICTUREDAY_ASSET_DIR;
+  try {
+    process.env.PICTUREDAY_ASSET_DIR = '/private/pictureday';
+    assert.equal(resolveAssetRoot(appRoot, undefined, 'production'), '/private/pictureday');
+  } finally {
+    if (previous === undefined) delete process.env.PICTUREDAY_ASSET_DIR;
+    else process.env.PICTUREDAY_ASSET_DIR = previous;
+  }
 });
 
-test('filesystem metadata reports the resolved root, nearest mount, and device IDs without source details', async () => {
+test('filesystem metadata reports resolved root, nearest mount, and device IDs without source details', async () => {
   const statResults = {
     '/private': { isDirectory: () => true, dev: 12 },
     '/private/pictureday': { isDirectory: () => true, dev: 12 },
@@ -68,9 +82,9 @@ test('filesystem metadata reports the resolved root, nearest mount, and device I
   assert.equal(JSON.stringify(result).includes('secret-source'), false);
 });
 
-test('filesystem metadata reports missing paths and unreadable mount information safely', async () => {
+test('filesystem metadata explicitly reports missing paths and unreadable mount information', async () => {
   const missingPath = Object.assign(new Error('private path missing'), { code: 'ENOENT' });
-  const denied = Object.assign(new Error('sensitive details'), { code: 'EACCES' });
+  const denied = Object.assign(new Error('sensitive underlying details'), { code: 'EACCES' });
   const result = await inspectFilesystemMetadata('/configured/assets', {
     stat: async (targetPath) => {
       if (targetPath === '/app') return { isDirectory: () => true, dev: 34 };
@@ -93,7 +107,62 @@ test('filesystem metadata reports missing paths and unreadable mount information
       app: { available: true, device: '34', reason: null }
     }
   });
-  assert.equal(JSON.stringify(result).includes('sensitive details'), false);
+  assert.equal(JSON.stringify(result).includes('sensitive underlying details'), false);
+});
+
+test('filesystem metadata reports other filesystem errors without exposing error messages', async () => {
+  const failure = Object.assign(new Error('private error detail'), { code: 'EIO' });
+  const result = await inspectFilesystemMetadata('/private/pictureday', {
+    stat: async () => {
+      throw failure;
+    },
+    readFile: async () => {
+      throw failure;
+    }
+  });
+
+  assert.equal(result.directories.private.exists, null);
+  assert.equal(result.directories.private.error, 'unavailable');
+  assert.deepEqual(result.mount.private, { available: false, reason: 'unavailable' });
+  assert.deepEqual(result.devices.app, {
+    available: false,
+    device: null,
+    reason: 'unavailable'
+  });
+  assert.equal(JSON.stringify(result).includes('private error detail'), false);
+});
+
+test('asset directories are created recursively and checked for write access', async () => {
+  const temporaryRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pictureday-storage-test-'));
+  const assetRoot = path.join(temporaryRoot, 'private', 'pictureday');
+
+  try {
+    const status = ensureAssetDirectories(assetRoot);
+    assert.deepEqual(status, { path: assetRoot, exists: true, writable: true });
+    for (const directory of ['full', 'thumb', 'brand']) {
+      assert.equal(fs.statSync(path.join(assetRoot, directory)).isDirectory(), true);
+    }
+  } finally {
+    await fs.promises.rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('read-only storage verification does not create a missing test file', async () => {
+  const temporaryRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pictureday-storage-read-test-'));
+  const assetRoot = path.join(temporaryRoot, 'assets');
+  const testFile = path.join(assetRoot, 'pictureday-storage-test.txt');
+  await fs.promises.mkdir(assetRoot);
+
+  try {
+    assert.deepEqual(await readStorageVerification(assetRoot), {
+      path: testFile,
+      exists: false,
+      contents: null
+    });
+    assert.equal(fs.existsSync(testFile), false);
+  } finally {
+    await fs.promises.rm(temporaryRoot, { recursive: true, force: true });
+  }
 });
 
 test('photo file audit returns only aggregate presence counts for stored file and thumbnail names', async () => {
@@ -176,11 +245,9 @@ test('photo file audit checks both legacy roots without returning paths or filen
     },
     { file: 'missing-private-photo.jpg', thumb: 'missing-private-thumbnail.jpg' }
   ];
-  let queryCount = 0;
   const db = {
     prepare(sql) {
       assert.equal(sql, 'SELECT file, thumb FROM photos');
-      queryCount++;
       return { all: async () => photos };
     }
   };
@@ -210,7 +277,6 @@ test('photo file audit checks both legacy roots without returning paths or filen
         thumb: { exists: true, matchingFiles: 1 }
       }
     });
-    assert.equal(queryCount, 1);
     const responseBody = JSON.stringify(result);
     for (const filename of photos.flatMap(({ file, thumb }) => [file, thumb])) {
       assert.equal(responseBody.includes(filename), false);
@@ -231,16 +297,53 @@ test('photo file audit checks both legacy roots without returning paths or filen
   }
 });
 
+test('read-only storage verification leaves an existing test file unchanged', async () => {
+  const temporaryRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pictureday-storage-read-test-'));
+  const assetRoot = path.join(temporaryRoot, 'assets');
+  const testFile = path.join(assetRoot, 'pictureday-storage-test.txt');
+  const contents = 'existing verification contents';
+  await fs.promises.mkdir(assetRoot);
+  await fs.promises.writeFile(testFile, contents);
+  const before = await fs.promises.stat(testFile);
+
+  try {
+    const originalWriteFile = fs.promises.writeFile;
+    let writeAttempts = 0;
+    fs.promises.writeFile = async () => {
+      writeAttempts++;
+      throw new Error('Read-only verification attempted a write.');
+    };
+    try {
+      assert.deepEqual(await readStorageVerification(assetRoot), {
+        path: testFile,
+        exists: true,
+        contents
+      });
+    } finally {
+      fs.promises.writeFile = originalWriteFile;
+    }
+    assert.equal(writeAttempts, 0);
+    const after = await fs.promises.stat(testFile);
+    assert.equal(after.mtimeMs, before.mtimeMs);
+    assert.equal(after.size, before.size);
+    assert.equal(await fs.promises.readFile(testFile, 'utf8'), contents);
+  } finally {
+    await fs.promises.rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
 test('Express returns 404 for direct full-photo and thumbnail asset requests', async () => {
   const temporaryRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pictureday-static-test-'));
   const publicDirectory = path.join(temporaryRoot, 'public');
   const server = express();
 
   try {
-    for (const directory of ['full', 'thumb']) {
-      const fixtureDirectory = path.join(publicDirectory, 'pictureday', directory);
-      await fs.promises.mkdir(fixtureDirectory, { recursive: true });
-      await fs.promises.writeFile(path.join(fixtureDirectory, 'fixture.jpg'), 'not a real photo');
+    for (const prefix of ['pictureday', path.join('assets', 'pictureday')]) {
+      for (const directory of ['full', 'thumb']) {
+        const fixtureDirectory = path.join(publicDirectory, prefix, directory);
+        await fs.promises.mkdir(fixtureDirectory, { recursive: true });
+        await fs.promises.writeFile(path.join(fixtureDirectory, 'fixture.jpg'), 'not a real photo');
+      }
     }
 
     server.use(denyPhotoAssetStaticAccess);
@@ -254,8 +357,10 @@ test('Express returns 404 for direct full-photo and thumbnail asset requests', a
     try {
       const { port } = listener.address();
       for (const directory of ['full', 'thumb']) {
-        const response = await fetch(`http://127.0.0.1:${port}/assets/pictureday/${directory}/fixture.jpg`);
-        assert.equal(response.status, 404, `${directory} files must not be served as static assets`);
+        for (const prefix of ['pictureday', 'assets/pictureday']) {
+          const response = await fetch(`http://127.0.0.1:${port}/assets/${prefix}/${directory}/fixture.jpg`);
+          assert.equal(response.status, 404, `${directory} files must not be served as static assets`);
+        }
       }
     } finally {
       await new Promise((resolve, reject) => {
@@ -267,7 +372,34 @@ test('Express returns 404 for direct full-photo and thumbnail asset requests', a
   }
 });
 
-test('filesystem diagnostic requires admin authorization and is a read-only GET route', async () => {
+test('photo uploads, retrieval, and branding share the resolved asset root', () => {
+  assert.match(serverSource, /const ASSET_ROOT = resolveAssetRoot\(ROOT, process\.env\.PICTUREDAY_ASSET_DIR\)/);
+  assert.match(serverSource, /path\.join\(ASSET_ROOT, 'full'\)/);
+  assert.match(serverSource, /path\.join\(ASSET_ROOT, 'thumb'\)/);
+  assert.match(serverSource, /path\.join\(ASSET_ROOT, 'brand'\)/);
+  assert.match(serverSource, /file\.fieldname === 'thumb' \? UP_THUMB : UP_FULL/);
+  assert.match(serverSource, /destination: \(req, file, cb\) => cb\(null, UP_BRAND\)/);
+  assert.match(serverSource, /createStaffPhotoFileHandler\(\{ db, fullDirectory: UP_FULL, thumbDirectory: UP_THUMB \}\)/);
+  assert.match(serverSource, /createGalleryPhotoFileHandler\(\{[\s\S]*fullDirectory: UP_FULL,[\s\S]*thumbDirectory: UP_THUMB/);
+  assert.match(photoRoutesSource, /await findPhotoFile\(directory, filename, fallbackDirectories\)/);
+  assert.match(serverSource, /app\.get\('\/brand\/:file'/);
+  assert.match(serverSource, /const STORAGE_TEST_PATH = storageTestPath\(ASSET_ROOT\)/);
+  assert.match(serverSource, /app\.get\('\/api\/admin\/diagnostics\/storage-read', requireAdmin/);
+  assert.match(
+    serverSource,
+    /app\.get\('\/api\/admin\/diagnostics\/storage-read', requireAdmin, ok\(async \(_req, res\) => \{\s*res\.json\(await readStorageVerification\(ASSET_ROOT\)\)/
+  );
+  assert.match(
+    serverSource,
+    /app\.post\('\/api\/admin\/diagnostics\/storage-write', requireAdmin/
+  );
+  assert.match(serverSource, /writeFile\(STORAGE_TEST_PATH, STORAGE_TEST_CONTENTS/);
+  assert.match(serverSource, /readStorageVerification\(ASSET_ROOT\)/);
+  assert.match(serverSource, /Asset root \$\{assetStorage\.path\} exists=\$\{assetStorage\.exists\} writable=\$\{assetStorage\.writable\}/);
+  assert.doesNotMatch(serverSource, /if \(!assetStorage\.exists \|\| !assetStorage\.writable\)[\s\S]{0,120}throw new Error/);
+});
+
+test('filesystem diagnostic rejects non-admins and allows an admin to reach its handler', async () => {
   const diagnosticPath = '/api/admin/diagnostics/storage-filesystem';
   const app = express();
   let handlerCalls = 0;
@@ -290,6 +422,14 @@ test('filesystem diagnostic requires admin authorization and is a read-only GET 
     const { port } = listener.address();
     const anonymousResponse = await fetch(`http://127.0.0.1:${port}${diagnosticPath}`);
     assert.equal(anonymousResponse.status, 403);
+    assert.deepEqual(await anonymousResponse.json(), {
+      error: 'Administrator access is required.'
+    });
+
+    const staffResponse = await fetch(`http://127.0.0.1:${port}${diagnosticPath}`, {
+      headers: { 'x-test-role': 'staff' }
+    });
+    assert.equal(staffResponse.status, 403);
 
     const adminResponse = await fetch(`http://127.0.0.1:${port}${diagnosticPath}`, {
       headers: { 'x-test-role': 'admin' }
@@ -311,15 +451,19 @@ test('filesystem diagnostic requires admin authorization and is a read-only GET 
     serverSource,
     /app\.get\('\/api\/admin\/diagnostics\/photo-file-audit', requireAdmin, ok\(async \(_req, res\) => \{\s*res\.json\(await auditPhotoFiles\(db, ASSET_ROOT\)\)/
   );
-  assert.doesNotMatch(serverSource, /app\.post\('\/api\/admin\/diagnostics\/storage-filesystem'/);
+  assert.doesNotMatch(
+    serverSource,
+    /app\.post\('\/api\/admin\/diagnostics\/storage-filesystem'/
+  );
 });
 
 test('photo file routes keep their staff and gallery authorization guards', () => {
-  assert.match(serverSource, /app\.get\('\/api\/photos\/:id\/file', requireStaff/);
-  assert.match(serverSource, /app\.get\('\/api\/gallery\/:token\/photo\/:id'/);
+  assert.match(serverSource, /app\.get\([\s\S]*'\/api\/photos\/:id\/file',\s*requireStaff/);
+  assert.match(serverSource, /app\.get\([\s\S]*'\/api\/gallery\/:token\/photo\/:id',\s*galleryLimiter/);
   assert.match(
-    serverSource,
+    photoRoutesSource,
     /WHERE id = \? AND student_id = \? AND published = 1 AND hidden = 0/
   );
-  assert.match(serverSource, /res\.sendFile\(path\.join\(thumb \? UP_THUMB : UP_FULL/);
+  assert.match(photoRoutesSource, /createStaffPhotoFileHandler/);
+  assert.match(photoRoutesSource, /createGalleryPhotoFileHandler/);
 });

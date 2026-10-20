@@ -3,90 +3,24 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+const PRODUCTION_ASSET_ROOT = '/private/pictureday';
+const ASSET_SUBDIRECTORIES = ['full', 'thumb', 'brand'];
 const LEGACY_ASSET_ROOTS = Object.freeze([
   '/app/public/assets/pictureday',
   '/app/godaddy-deploy/public/assets/pictureday'
 ]);
+const STORAGE_TEST_FILENAME = 'pictureday-storage-test.txt';
+const STORAGE_TEST_CONTENTS = 'Picture Day storage persistence test';
 
-function resolveAssetRoot(appRoot, assetDirectory) {
-  return path.resolve(assetDirectory || path.join(appRoot, '..', 'public', 'assets', 'pictureday'));
-}
-
-function photoFilePath(directory, filename) {
-  const basename = path.basename(filename || '');
-  if (!basename || basename !== filename) throw new Error('Invalid stored photo filename.');
-  return path.join(directory, basename);
-}
-
-async function isPhotoFilePresent(directory, filename) {
-  if (!filename) return false;
-
-  try {
-    return (await fs.promises.stat(photoFilePath(directory, filename))).isFile();
-  } catch (error) {
-    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false;
-    throw error;
-  }
-}
-
-async function directoryExists(directory) {
-  try {
-    return (await fs.promises.stat(directory)).isDirectory();
-  } catch (error) {
-    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false;
-    throw error;
-  }
-}
-
-async function countPhotoFiles(directory, photos, filenameProperty) {
-  let count = 0;
-  for (const photo of photos) {
-    if (await isPhotoFilePresent(directory, photo[filenameProperty])) count++;
-  }
-  return count;
-}
-
-async function inspectPhotoStorageLocation(photos, assetRoot) {
-  const fullDirectory = path.join(assetRoot, 'full');
-  const thumbDirectory = path.join(assetRoot, 'thumb');
-  const [exists, fullExists, thumbExists, fullSizeFilesFound, thumbnailsFound] = await Promise.all([
-    directoryExists(assetRoot),
-    directoryExists(fullDirectory),
-    directoryExists(thumbDirectory),
-    countPhotoFiles(fullDirectory, photos, 'file'),
-    countPhotoFiles(thumbDirectory, photos, 'thumb')
-  ]);
-
-  return {
-    exists,
-    full: { exists: fullExists, matchingFiles: fullSizeFilesFound },
-    thumb: { exists: thumbExists, matchingFiles: thumbnailsFound }
-  };
-}
-
-async function auditPhotoFiles(db, assetRoot, { legacyAssetRoots = LEGACY_ASSET_ROOTS } = {}) {
-  const photos = await db.prepare('SELECT file, thumb FROM photos').all();
-  const counts = {
-    totalPhotos: photos.length,
-    fullSizeFilesFound: 0,
-    fullSizeFilesMissing: 0,
-    thumbnailsFound: 0,
-    thumbnailsMissing: 0,
-    assetRoot
-  };
-
-  const selectedLocation = await inspectPhotoStorageLocation(photos, assetRoot);
-  counts.fullSizeFilesFound = selectedLocation.full.matchingFiles;
-  counts.fullSizeFilesMissing = photos.length - counts.fullSizeFilesFound;
-  counts.thumbnailsFound = selectedLocation.thumb.matchingFiles;
-  counts.thumbnailsMissing = photos.length - counts.thumbnailsFound;
-  counts.locations = {
-    selectedAssetRoot: selectedLocation,
-    legacyAppPublicAssets: await inspectPhotoStorageLocation(photos, legacyAssetRoots[0]),
-    legacyGoDaddyDeployPublicAssets: await inspectPhotoStorageLocation(photos, legacyAssetRoots[1])
-  };
-
-  return counts;
+function resolveAssetRoot(
+  appRoot,
+  assetDirectory = process.env.PICTUREDAY_ASSET_DIR,
+  nodeEnv = process.env.NODE_ENV
+) {
+  const configuredDirectory = typeof assetDirectory === 'string' ? assetDirectory.trim() : '';
+  if (configuredDirectory) return path.resolve(configuredDirectory);
+  if (nodeEnv === 'production') return PRODUCTION_ASSET_ROOT;
+  return path.resolve(path.join(appRoot, '..', 'public', 'assets', 'pictureday'));
 }
 
 function filesystemErrorReason(error) {
@@ -200,8 +134,139 @@ async function inspectFilesystemMetadata(
   };
 }
 
+function ensureAssetDirectories(assetRoot) {
+  const directories = [assetRoot, ...ASSET_SUBDIRECTORIES.map((name) => path.join(assetRoot, name))];
+  for (const directory of directories) fs.mkdirSync(directory, { recursive: true });
+
+  const exists = fs.statSync(assetRoot).isDirectory();
+  let writable = exists;
+  if (writable) {
+    for (const directory of directories) {
+      try {
+        fs.accessSync(directory, fs.constants.W_OK);
+      } catch (error) {
+        if (error.code !== 'EACCES' && error.code !== 'EROFS') throw error;
+        writable = false;
+        break;
+      }
+    }
+  }
+
+  return { path: assetRoot, exists, writable };
+}
+
+function photoFilePath(directory, filename) {
+  const basename = path.basename(filename || '');
+  if (!basename || basename !== filename) throw new Error('Invalid stored photo filename.');
+  return path.join(directory, basename);
+}
+
+async function isPhotoFilePresent(directory, filename) {
+  if (!filename) return false;
+
+  try {
+    return (await fs.promises.stat(photoFilePath(directory, filename))).isFile();
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false;
+    throw error;
+  }
+}
+
+async function findPhotoFile(directory, filename, fallbackDirectories = []) {
+  if (!filename) return null;
+
+  for (const candidateDirectory of [directory, ...fallbackDirectories]) {
+    const filePath = photoFilePath(candidateDirectory, filename);
+    try {
+      if ((await fs.promises.stat(filePath)).isFile()) return filePath;
+    } catch (error) {
+      if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
+    }
+  }
+  return null;
+}
+
+async function directoryExists(directory) {
+  try {
+    return (await fs.promises.stat(directory)).isDirectory();
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false;
+    throw error;
+  }
+}
+
+async function countPhotoFiles(directory, photos, filenameProperty) {
+  let count = 0;
+  for (const photo of photos) {
+    if (await isPhotoFilePresent(directory, photo[filenameProperty])) count++;
+  }
+  return count;
+}
+
+async function inspectPhotoStorageLocation(photos, assetRoot) {
+  const fullDirectory = path.join(assetRoot, 'full');
+  const thumbDirectory = path.join(assetRoot, 'thumb');
+  const [exists, fullExists, thumbExists, fullSizeFilesFound, thumbnailsFound] = await Promise.all([
+    directoryExists(assetRoot),
+    directoryExists(fullDirectory),
+    directoryExists(thumbDirectory),
+    countPhotoFiles(fullDirectory, photos, 'file'),
+    countPhotoFiles(thumbDirectory, photos, 'thumb')
+  ]);
+
+  return {
+    exists,
+    full: { exists: fullExists, matchingFiles: fullSizeFilesFound },
+    thumb: { exists: thumbExists, matchingFiles: thumbnailsFound }
+  };
+}
+
+async function auditPhotoFiles(db, assetRoot, { legacyAssetRoots = LEGACY_ASSET_ROOTS } = {}) {
+  const photos = await db.prepare('SELECT file, thumb FROM photos').all();
+  const counts = {
+    totalPhotos: photos.length,
+    fullSizeFilesFound: 0,
+    fullSizeFilesMissing: 0,
+    thumbnailsFound: 0,
+    thumbnailsMissing: 0,
+    assetRoot
+  };
+
+  const selectedLocation = await inspectPhotoStorageLocation(photos, assetRoot);
+  counts.fullSizeFilesFound = selectedLocation.full.matchingFiles;
+  counts.fullSizeFilesMissing = photos.length - counts.fullSizeFilesFound;
+  counts.thumbnailsFound = selectedLocation.thumb.matchingFiles;
+  counts.thumbnailsMissing = photos.length - counts.thumbnailsFound;
+  counts.locations = {
+    selectedAssetRoot: selectedLocation,
+    legacyAppPublicAssets: await inspectPhotoStorageLocation(photos, legacyAssetRoots[0]),
+    legacyGoDaddyDeployPublicAssets: await inspectPhotoStorageLocation(photos, legacyAssetRoots[1])
+  };
+
+  return counts;
+}
+
+function storageTestPath(assetRoot) {
+  return path.join(assetRoot, STORAGE_TEST_FILENAME);
+}
+
+async function readStorageVerification(assetRoot) {
+  const filePath = storageTestPath(assetRoot);
+  try {
+    const stat = await fs.promises.stat(filePath);
+    if (!stat.isFile()) return { path: filePath, exists: false, contents: null };
+    const contents = await fs.promises.readFile(filePath, 'utf8');
+    return { path: filePath, exists: true, contents };
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return { path: filePath, exists: false, contents: null };
+    }
+    throw error;
+  }
+}
+
 function denyPhotoAssetStaticAccess(req, res, next) {
-  if (/^\/assets\/pictureday\/(?:full|thumb)(?:\/|$)/.test(req.path)) {
+  if (/^\/assets\/(?:assets\/)?pictureday\/(?:full|thumb)(?:\/|$)/.test(req.path)) {
     return res.sendStatus(404);
   }
   return next();
@@ -209,9 +274,14 @@ function denyPhotoAssetStaticAccess(req, res, next) {
 
 module.exports = {
   resolveAssetRoot,
+  inspectFilesystemMetadata,
+  ensureAssetDirectories,
   photoFilePath,
+  findPhotoFile,
   LEGACY_ASSET_ROOTS,
   auditPhotoFiles,
-  inspectFilesystemMetadata,
+  storageTestPath,
+  STORAGE_TEST_CONTENTS,
+  readStorageVerification,
   denyPhotoAssetStaticAccess
 };

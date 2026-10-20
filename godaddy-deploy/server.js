@@ -28,11 +28,19 @@ const {
 } = require('./lib/gallery.js');
 const {
   resolveAssetRoot,
+  inspectFilesystemMetadata,
+  ensureAssetDirectories,
   photoFilePath,
   auditPhotoFiles,
-  inspectFilesystemMetadata,
+  storageTestPath,
+  STORAGE_TEST_CONTENTS,
+  readStorageVerification,
   denyPhotoAssetStaticAccess
 } = require('./lib/photo-storage.js');
+const {
+  createStaffPhotoFileHandler,
+  createGalleryPhotoFileHandler
+} = require('./lib/photo-routes.js');
 
 
 
@@ -95,7 +103,16 @@ const ASSET_ROOT = resolveAssetRoot(ROOT, process.env.PICTUREDAY_ASSET_DIR);
 const UP_FULL = path.join(ASSET_ROOT, 'full');
 const UP_THUMB = path.join(ASSET_ROOT, 'thumb');
 const UP_BRAND = path.join(ASSET_ROOT, 'brand');
-[UP_FULL, UP_THUMB, UP_BRAND].forEach((d) => fs.mkdirSync(d, { recursive: true }));
+let assetStorage;
+try {
+  assetStorage = ensureAssetDirectories(ASSET_ROOT);
+} catch (error) {
+  console.error(`[storage] Could not initialize asset storage at ${ASSET_ROOT}: ${error.message}`);
+  throw error;
+}
+console.info(
+  `[storage] Asset root ${assetStorage.path} exists=${assetStorage.exists} writable=${assetStorage.writable}`
+);
 
 /* ------------------------------------------------------------ middleware */
 
@@ -636,29 +653,15 @@ app.get('/api/admin/diagnostics/photo-248-storage', requireAdmin, ok(async (_req
   });
 }));
 
-const STORAGE_TEST_PATH = path.join(ASSET_ROOT, 'pictureday-storage-test.txt');
-const STORAGE_TEST_CONTENTS = 'Picture Day storage persistence test';
-
-async function readStorageTestFile() {
-  try {
-    const stat = await fs.promises.stat(STORAGE_TEST_PATH);
-    const contents = await fs.promises.readFile(STORAGE_TEST_PATH, 'utf8');
-    return { path: STORAGE_TEST_PATH, exists: stat.isFile(), contents };
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      return { path: STORAGE_TEST_PATH, exists: false, contents: null };
-    }
-    throw error;
-  }
-}
+const STORAGE_TEST_PATH = storageTestPath(ASSET_ROOT);
 
 app.post('/api/admin/diagnostics/storage-write', requireAdmin, ok(async (_req, res) => {
   await fs.promises.writeFile(STORAGE_TEST_PATH, STORAGE_TEST_CONTENTS, 'utf8');
-  res.json(await readStorageTestFile());
+  res.json(await readStorageVerification(ASSET_ROOT));
 }));
 
 app.get('/api/admin/diagnostics/storage-read', requireAdmin, ok(async (_req, res) => {
-  res.json(await readStorageTestFile());
+  res.json(await readStorageVerification(ASSET_ROOT));
 }));
 
 app.get('/api/admin/diagnostics/storage-filesystem', requireAdmin, ok(async (_req, res) => {
@@ -805,14 +808,10 @@ app.get('/api/photos/unassigned', requireStaff, ok(async (req, res) =>
   )
 ));
 
-app.get('/api/photos/:id/file', requireStaff, ok(async (req, res) => {
-  const p = await db.prepare('SELECT * FROM photos WHERE id = ?').get(req.params.id);
-  if (!p) return res.sendStatus(404);
-  const thumb = req.query.size === 'thumb' && p.thumb;
-  res.sendFile(path.join(thumb ? UP_THUMB : UP_FULL, thumb ? p.thumb : p.file), (error) => {
-    if (error && !res.headersSent) res.sendStatus(error.code === 'ENOENT' ? 404 : 500);
-  });
-}));
+const staffPhotoFileHandler = ok(
+  createStaffPhotoFileHandler({ db, fullDirectory: UP_FULL, thumbDirectory: UP_THUMB })
+);
+app.get('/api/photos/:id/file', requireStaff, staffPhotoFileHandler);
 
 app.post(
   '/api/photos/:id/assign',
@@ -932,25 +931,15 @@ app.get(
   })
 );
 
-app.get('/api/gallery/:token/photo/:id', galleryLimiter, ok(async (req, res) => {
-  const gallery = await galleryStudentByToken(db, req.params.token);
-  if (gallery.status === 'not-found') return res.sendStatus(404);
-  if (gallery.status === 'expired') return res.sendStatus(410);
-  const s = gallery.student;
-  const p = await db
-    .prepare('SELECT * FROM photos WHERE id = ? AND student_id = ? AND published = 1 AND hidden = 0')
-    .get(req.params.id, s.id);
-  if (!p) return res.sendStatus(404);
-  const thumb = req.query.size === 'thumb' && p.thumb;
-  if (req.query.download)
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="${s.last_name}-${s.first_name}-${p.id}${path.extname(p.file) || '.jpg'}"`
-    );
-  res.sendFile(path.join(thumb ? UP_THUMB : UP_FULL, thumb ? p.thumb : p.file), (error) => {
-    if (error && !res.headersSent) res.sendStatus(error.code === 'ENOENT' ? 404 : 500);
-  });
-}));
+const galleryPhotoFileHandler = ok(
+  createGalleryPhotoFileHandler({
+    db,
+    galleryStudentByToken,
+    fullDirectory: UP_FULL,
+    thumbDirectory: UP_THUMB
+  })
+);
+app.get('/api/gallery/:token/photo/:id', galleryLimiter, galleryPhotoFileHandler);
 
 /* ----------------------------------------------------------------- email */
 
