@@ -10,7 +10,6 @@ const express = require('express');
 const session = require('express-session');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-const multer = require('multer');
 const bcrypt = require('bcryptjs');
 const QRCode = require('qrcode');
 const { parse: parseCsv } = require('csv-parse/sync');
@@ -41,6 +40,15 @@ const {
   createStaffPhotoFileHandler,
   createGalleryPhotoFileHandler
 } = require('./lib/photo-routes.js');
+const {
+  BRAND_UPLOAD_LIMIT_BYTES,
+  createBrandUploadMiddleware,
+  createPhotoUploadMiddleware,
+  persistBrandUpload,
+  persistPhotoUpload,
+  setSvgSafetyHeaders,
+  uploadErrorStatus
+} = require('./lib/upload-security.js');
 
 
 
@@ -589,21 +597,7 @@ app.get(
 
 /* --------------------------------------------------------------- uploads */
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, file.fieldname === 'thumb' ? UP_THUMB : UP_FULL),
-  filename: (req, file, cb) => {
-    if (!req._pdName) req._pdName = crypto.randomBytes(12).toString('hex');
-    const ext = (path.extname(file.originalname || '') || '.jpg').toLowerCase().slice(0, 6);
-    cb(null, req._pdName + (file.fieldname === 'thumb' ? '.jpg' : ext));
-  }
-});
-
-const upload = multer({
-  storage,
-  limits: { fileSize: 60 * 1024 * 1024, files: 2 },
-  fileFilter: (req, file, cb) =>
-    /^image\//.test(file.mimetype) ? cb(null, true) : cb(new Error('Only image files can be uploaded.'))
-});
+const upload = createPhotoUploadMiddleware({ fullDirectory: UP_FULL, thumbDirectory: UP_THUMB });
 
 app.post(
   '/api/batches',
@@ -698,28 +692,32 @@ app.delete(
 app.post(
   '/api/upload',
   requireStaff,
-  upload.fields([{ name: 'file', maxCount: 1 }, { name: 'thumb', maxCount: 1 }]),
+  upload,
   ok(async (req, res) => {
     const f = req.files?.file?.[0];
-    if (!f) return res.status(400).json({ error: 'No photo was received.' });
     const thumb = req.files?.thumb?.[0];
-    const info = await db
-      .prepare(
-        `INSERT INTO photos (batch_id, file, thumb, original, bytes, captured_at, seq_index, qr_value, created_at)
-         VALUES (@batch, @file, @thumb, @original, @bytes, @captured, @seq, @qr, @now)`
-      )
-      .run({
-        batch: Number(req.body.batchId) || null,
-        file: f.filename,
-        thumb: thumb ? thumb.filename : null,
-        original: (f.originalname || '').slice(0, 200),
-        bytes: f.size,
-        captured: Number(req.body.capturedAt) || null,
-        seq: Number(req.body.seq) || 0,
-        qr: (req.body.qr || '').trim().slice(0, 200) || null,
-        now: Date.now()
-      });
-    res.json({ id: info.lastInsertRowid });
+    const { result } = await persistPhotoUpload({
+      file: f,
+      thumb,
+      persist: (photo, thumbnail) =>
+        db
+          .prepare(
+            `INSERT INTO photos (batch_id, file, thumb, original, bytes, captured_at, seq_index, qr_value, created_at)
+             VALUES (@batch, @file, @thumb, @original, @bytes, @captured, @seq, @qr, @now)`
+          )
+          .run({
+            batch: Number(req.body.batchId) || null,
+            file: photo.filename,
+            thumb: thumbnail ? thumbnail.filename : null,
+            original: (photo.originalname || '').slice(0, 200),
+            bytes: photo.size,
+            captured: Number(req.body.capturedAt) || null,
+            seq: Number(req.body.seq) || 0,
+            qr: (req.body.qr || '').trim().slice(0, 200) || null,
+            now: Date.now()
+          })
+    });
+    res.json({ id: result.lastInsertRowid });
   })
 );
 
@@ -1309,50 +1307,51 @@ app.post(
   })
 );
 
-const brandUpload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, UP_BRAND),
-    filename: (req, file, cb) =>
-      cb(null, `${req.params.kind}-${crypto.randomBytes(6).toString('hex')}${path.extname(file.originalname) || '.png'}`)
-  }),
-  limits: { fileSize: 4 * 1024 * 1024, files: 1 },
-  fileFilter: (req, file, cb) =>
-    /^image\/(png|jpeg|gif|webp|svg\+xml)$/.test(file.mimetype) ? cb(null, true) : cb(new Error('Use a PNG, JPG, GIF, WEBP or SVG.'))
-});
+const brandUpload = createBrandUploadMiddleware({ brandDirectory: UP_BRAND });
 
 app.post(
   '/api/branding/:kind(logo|artwork|galleryArtwork)',
   requireUser,
-  brandUpload.single('image'),
+  brandUpload,
   ok(async (req, res) => {
-    if (!req.file) return res.status(400).json({ error: 'No image was received.' });
-    const draft = branding('draft');
-    draft[req.params.kind] = req.file.filename;
-    await setSetting('branding_draft', draft);
-    res.json(draft);
+    const { result } = await persistBrandUpload({
+      file: req.file,
+      persist: async (image) => {
+        const draft = branding('draft');
+        draft[req.params.kind] = image.filename;
+        await setSetting('branding_draft', draft);
+        return draft;
+      }
+    });
+    res.json(result);
   })
 );
 
 app.post(
   '/api/branding/block-image',
   requireUser,
-  brandUpload.single('image'),
+  brandUpload,
   ok(async (req, res) => {
-    if (!req.file) return res.status(400).json({ error: 'No image was received.' });
-    const draft = branding('draft');
-    draft.blocks = [...(draft.blocks || []), {
-      id: `block-${crypto.randomBytes(6).toString('hex')}`,
-      type: 'image',
-      src: req.file.filename,
-      text: '',
-      x: 8,
-      y: 8,
-      width: 32,
-      size: 1.4,
-      color: 'ink'
-    }].slice(0, 24);
-    await setSetting('branding_draft', draft);
-    res.json(draft);
+    const { result } = await persistBrandUpload({
+      file: req.file,
+      persist: async (image) => {
+        const draft = branding('draft');
+        draft.blocks = [...(draft.blocks || []), {
+          id: `block-${crypto.randomBytes(6).toString('hex')}`,
+          type: 'image',
+          src: image.filename,
+          text: '',
+          x: 8,
+          y: 8,
+          width: 32,
+          size: 1.4,
+          color: 'ink'
+        }].slice(0, 24);
+        await setSetting('branding_draft', draft);
+        return draft;
+      }
+    });
+    res.json(result);
   })
 );
 
@@ -1369,6 +1368,7 @@ app.delete(
 
 app.get('/brand/:file', (req, res) => {
   if (!/^[\w.-]+$/.test(req.params.file)) return res.sendStatus(400);
+  setSvgSafetyHeaders(res, req.params.file);
   res.sendFile(path.join(UP_BRAND, req.params.file), (err) => err && res.sendStatus(404));
 });
 
@@ -1450,13 +1450,17 @@ app.get('/api/stats', requireStaff, ok(async (req, res) => {
 
 app.use((err, req, res, next) => {
   console.error(err);
+  const limit = req.path.startsWith('/api/branding')
+    ? `${BRAND_UPLOAD_LIMIT_BYTES / (1024 * 1024)} MB`
+    : '60 MB';
   const clientMessage = err.code === 'LIMIT_FILE_SIZE'
-    ? 'That file is larger than the 60 MB limit.'
+    ? `That file is larger than the ${limit} limit.`
     : err.status && err.status < 500
       ? err.message
       : 'The request could not be completed. Please try again.';
-  if (req.path.startsWith('/api/')) return res.status(err.status || 500).json({ error: clientMessage });
-  res.status(err.status || 500).send(clientMessage);
+  const status = uploadErrorStatus(err);
+  if (req.path.startsWith('/api/')) return res.status(status).json({ error: clientMessage });
+  res.status(status).send(clientMessage);
 });
 
 initialize()

@@ -2,6 +2,7 @@
 
 const path = require('node:path');
 const { findPhotoFile, LEGACY_ASSET_ROOTS } = require('./photo-storage');
+const { setSvgSafetyHeaders } = require('./upload-security');
 
 async function sendPhotoFile(res, photo, req, fullDirectory, thumbDirectory, legacyAssetRoots) {
   const useThumbnail = req.query.size === 'thumb' && photo.thumb;
@@ -12,6 +13,7 @@ async function sendPhotoFile(res, photo, req, fullDirectory, thumbDirectory, leg
   const filePath = await findPhotoFile(directory, filename, fallbackDirectories);
   if (!filePath) return res.sendStatus(404);
 
+  setSvgSafetyHeaders(res, filePath);
   return res.sendFile(filePath, (error) => {
     if (error && !res.headersSent) res.sendStatus(error.code === 'ENOENT' ? 404 : 500);
   });

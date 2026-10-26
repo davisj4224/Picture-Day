@@ -370,9 +370,14 @@ the server is reachable from outside the building.
 - [ ] **Keep it patched.** `npm audit` occasionally, and update Node.
 - [ ] **Uploaded files are private.** Student photographs are returned only
       through authenticated staff and token-authorized gallery routes.
-- [ ] **Uploads are trusted input.** Only signed-in staff can upload, and only
-      images are accepted, but the files are served back to browsers — keep the
-      server behind your firewall if you can.
+- [ ] **Treat uploads as untrusted input.** Staff authentication restricts who
+      can upload. Recognized image files are checked by content rather than
+      trusting their filename or declared MIME type. Unsupported or unverified
+      formats are rejected; verify additional camera formats with a
+      representative sample before adding support. Branding accepts checked
+      PNG, JPG, GIF, WEBP, and SVG images; public SVG responses are sandboxed.
+      Student photos remain available only through the authenticated staff and
+      token-authorized gallery routes.
 
 A reasonable middle path: run it on a school machine on the internal network
 during picture day, publish galleries there, export the links, and send the

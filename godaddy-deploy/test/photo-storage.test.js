@@ -20,6 +20,7 @@ const {
 const appRoot = path.join(path.sep, 'app', 'godaddy-deploy');
 const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 const photoRoutesSource = fs.readFileSync(path.join(__dirname, '..', 'lib', 'photo-routes.js'), 'utf8');
+const uploadSecuritySource = fs.readFileSync(path.join(__dirname, '..', 'lib', 'upload-security.js'), 'utf8');
 
 test('production defaults to /private/pictureday when no asset directory is configured', () => {
   assert.equal(resolveAssetRoot(appRoot, '', 'production'), '/private/pictureday');
@@ -377,8 +378,12 @@ test('photo uploads, retrieval, and branding share the resolved asset root', () 
   assert.match(serverSource, /path\.join\(ASSET_ROOT, 'full'\)/);
   assert.match(serverSource, /path\.join\(ASSET_ROOT, 'thumb'\)/);
   assert.match(serverSource, /path\.join\(ASSET_ROOT, 'brand'\)/);
-  assert.match(serverSource, /file\.fieldname === 'thumb' \? UP_THUMB : UP_FULL/);
-  assert.match(serverSource, /destination: \(req, file, cb\) => cb\(null, UP_BRAND\)/);
+  assert.match(serverSource, /createPhotoUploadMiddleware\(\{ fullDirectory: UP_FULL, thumbDirectory: UP_THUMB \}\)/);
+  assert.match(uploadSecuritySource, /file\.fieldname === 'thumb' \? thumbDirectory : fullDirectory/);
+  assert.match(serverSource, /createBrandUploadMiddleware\(\{ brandDirectory: UP_BRAND \}\)/);
+  assert.match(uploadSecuritySource, /destination: \(_req, _file, callback\) => callback\(null, brandDirectory\)/);
+  assert.match(serverSource, /setSvgSafetyHeaders\(res, req\.params\.file\)/);
+  assert.match(photoRoutesSource, /setSvgSafetyHeaders\(res, filePath\)/);
   assert.match(serverSource, /createStaffPhotoFileHandler\(\{ db, fullDirectory: UP_FULL, thumbDirectory: UP_THUMB \}\)/);
   assert.match(serverSource, /createGalleryPhotoFileHandler\(\{[\s\S]*fullDirectory: UP_FULL,[\s\S]*thumbDirectory: UP_THUMB/);
   assert.match(photoRoutesSource, /await findPhotoFile\(directory, filename, fallbackDirectories\)/);

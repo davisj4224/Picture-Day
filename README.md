@@ -198,9 +198,11 @@ the server is reachable from outside the building.
 - [ ] **Sessions are stored in SQLite.** Restarting the server does not sign staff out.
       Session data is stored alongside the application database in the
       database.
-- [ ] **Uploads are trusted input.** Only signed-in staff can upload, and only
-      images are accepted, but the files are served back to browsers — keep the
-      server behind your firewall if you can.
+- [ ] **Treat uploads as untrusted input.** Only signed-in staff can upload.
+      The server checks recognized image contents instead of trusting filenames
+      or MIME types. Unsupported or unverified formats are rejected; verify
+      additional camera formats with a representative sample before adding
+      support. Student photos are served only through protected routes.
 
 A reasonable middle path: run it on a school machine on the internal network
 during picture day, publish galleries there, export the links, and send the
