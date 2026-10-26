@@ -103,8 +103,11 @@ non-sensitive representative sample in an isolated test fixture.
 
 Proceed one explicitly approved task at a time:
 
-1. Complete upload hardening by verifying real camera formats with
-   representative samples before adding any additional support.
+1. Review and approve a minimal, isolated compatibility-test plan for the
+   actual camera/browser image formats before creating fixtures or adding
+   support. BMP support is not listed by the installed Sharp build; HEIC
+   support is unconfirmed. Actual camera/browser compatibility remains
+   unverified.
 2. Review and improve parsing/validation of multiple parent email recipients.
 3. Design and test separate picture-day sessions without invalidating existing
    QR codes or gallery access.
@@ -159,13 +162,21 @@ These are candidate tasks, not blanket authorization to implement them.
 
 ## Handoff checkpoint
 
-- Last completed step: reviewed the upload-security changes, removed unverified
-  photo acceptance, updated related guidance, and ran the isolated Node 22
-  full suite.
-- Recommended next step: obtain a representative non-sensitive sample from
-  each school camera/browser workflow and verify its actual content format in
-  an isolated fixture before deciding whether any further format support is
-  needed.
+- October 26, 2026: reviewed upload-format compatibility. No tests were run
+  and no fixtures were created in this review. Actual camera/browser
+  compatibility remains unverified; BMP support is not listed by the installed
+  Sharp build, and HEIC support is unconfirmed.
+- Next task: review and approve a minimal, isolated compatibility-test plan.
+  Do not begin implementation or create fixtures until approved.
+- Separate unresolved issue — Gmail email deliverability: some Gmail
+  recipients report missing Picture Day emails even though GoDaddy shows them
+  as sent. Test messages reached the owner's two Gmail accounts, but this does
+  not establish reliable delivery for all recipients. The cause is unknown;
+  “sent” does not prove inbox delivery. A separately approved future
+  investigation may check recipients' Spam and All Mail folders, SPF/DKIM/DMARC,
+  actual SMTP responses, and bounce/deferred/rejection information. Email
+  troubleshooting is a separate future task. Do not change email code, SMTP
+  settings, DNS, or production configuration during this work.
 - This handoff records the pre-checkpoint status for traceability. Verify the
   actual branch HEAD and clean/dirty status with the commands above after
   resuming.
