@@ -38,8 +38,18 @@ const {
 } = require('./lib/photo-storage.js');
 const {
   createStaffPhotoFileHandler,
-  createGalleryPhotoFileHandler
+  createGalleryPhotoFileHandler,
+  createProjectGalleryPhotoFileHandler
 } = require('./lib/photo-routes.js');
+const {
+  projectStudentQrCode,
+  resolveProjectQr,
+  publishProjectStudent,
+  unpublishProjectStudent,
+  projectGalleryStudentByToken,
+  projectGalleryPhotos,
+  newProjectGalleryToken
+} = require('./lib/projects.js');
 const {
   BRAND_UPLOAD_LIMIT_BYTES,
   createBrandUploadMiddleware,
@@ -237,6 +247,7 @@ app.get('/admin', requireStaff, page('admin.html'));
 app.get('/change-password', requireUser, page('change-password.html'));
 app.get('/design', requireUser, page('design.html'));
 app.get('/g/:token', page('gallery.html'));
+app.get('/p/:token', page('gallery.html'));
 
 app.use(denyPhotoAssetStaticAccess);
 app.use('/assets', express.static(path.join(ROOT, 'public'), { maxAge: '1h' }));
@@ -395,7 +406,7 @@ const studentPublic = (s) => ({
 
 const ROSTER_SQL = `
   SELECT s.*,
-    (SELECT COUNT(*) FROM photos p WHERE p.student_id = s.id AND p.is_marker = 0 AND p.hidden = 0) AS photo_count,
+    (SELECT COUNT(*) FROM photos p WHERE p.student_id = s.id AND p.project_id IS NULL AND p.is_marker = 0 AND p.hidden = 0) AS photo_count,
     (SELECT MAX(sent_at) FROM email_log e WHERE e.student_id = s.id AND e.status = 'sent') AS emailed_at
   FROM students s`;
 
@@ -603,22 +614,28 @@ app.post(
   '/api/batches',
   requireStaff,
   ok(async (req, res) => {
+    const projectId = Number(req.body?.projectId);
+    if (!Number.isSafeInteger(projectId) || projectId < 1) {
+      return res.status(400).json({ error: 'Select an active photo project before creating an upload batch.' });
+    }
+    const project = await db.prepare('SELECT id FROM projects WHERE id = ? AND archived_at IS NULL').get(projectId);
+    if (!project) return res.status(409).json({ error: 'The selected project does not exist or is archived.' });
     const name = String(req.body?.name || '').trim() || new Date().toLocaleString();
-    const info = await db.prepare('INSERT INTO batches (name, created_at) VALUES (?, ?)').run(name, Date.now());
-    res.json({ id: info.lastInsertRowid, name });
+    const info = await db.prepare('INSERT INTO batches (name, project_id, created_at) VALUES (?, ?, ?)').run(name, projectId, Date.now());
+    res.json({ id: info.lastInsertRowid, name, projectId });
   })
 );
 
-app.get('/api/batches', requireStaff, ok(async (req, res) =>
-  res.json(
-    await db
-      .prepare(
-        `SELECT b.*, (SELECT COUNT(*) FROM photos p WHERE p.batch_id = b.id) AS photos
-         FROM batches b ORDER BY b.created_at DESC`
-      )
-      .all()
-  )
-));
+app.get('/api/batches', requireStaff, ok(async (req, res) => {
+  const rows = await db.prepare(
+    `SELECT b.*, pr.name AS project_name,
+       (SELECT COUNT(*) FROM photos p WHERE p.batch_id = b.id) AS photos
+     FROM batches b LEFT JOIN projects pr ON pr.id = b.project_id
+    ${req.query.projectId ? 'WHERE b.project_id = ?' : 'WHERE b.project_id IS NULL'}
+     ORDER BY b.created_at DESC`
+  ).all(...(req.query.projectId ? [req.query.projectId] : []));
+  res.json(rows);
+}));
 
 async function inspectPhotoFile(directory, filename) {
   if (!filename) return { filename: filename || null, path: null, exists: false };
@@ -699,11 +716,13 @@ app.post(
     const { result } = await persistPhotoUpload({
       file: f,
       thumb,
-      persist: (photo, thumbnail) =>
-        db
+      persist: async (photo, thumbnail) => {
+        const inserted = await db
           .prepare(
-            `INSERT INTO photos (batch_id, file, thumb, original, bytes, captured_at, seq_index, qr_value, created_at)
-             VALUES (@batch, @file, @thumb, @original, @bytes, @captured, @seq, @qr, @now)`
+            `INSERT INTO photos (batch_id, project_id, file, thumb, original, bytes, captured_at, seq_index, qr_value, created_at)
+             SELECT b.id, b.project_id, @file, @thumb, @original, @bytes, @captured, @seq, @qr, @now
+             FROM batches b JOIN projects pr ON pr.id = b.project_id
+             WHERE b.id = @batch AND pr.archived_at IS NULL`
           )
           .run({
             batch: Number(req.body.batchId) || null,
@@ -716,6 +735,13 @@ app.post(
             qr: (req.body.qr || '').trim().slice(0, 200) || null,
             now: Date.now()
           })
+        if (!inserted.changes) {
+          const error = new Error('The upload batch is missing or its project has been archived.');
+          error.status = 409;
+          throw error;
+        }
+        return inserted;
+      }
     });
     res.json({ id: result.lastInsertRowid });
   })
@@ -730,8 +756,15 @@ function normalizeCode(v) {
 }
 
 async function sortBatch(batchId) {
+  const batch = await db.prepare('SELECT id, project_id FROM batches WHERE id = ?').get(batchId);
+  if (!batch) throw Object.assign(new Error('Batch not found.'), { status: 404 });
   const students = await db.prepare('SELECT id, qr_code FROM students').all();
   const byCode = new Map(students.map((s) => [s.qr_code.toUpperCase(), s.id]));
+  const projectCodes = batch.project_id
+    ? new Map((await db.prepare(
+      'SELECT qr_code, student_id FROM project_students WHERE project_id = ? AND qr_code IS NOT NULL'
+    ).all(batch.project_id)).map((row) => [row.qr_code.toUpperCase(), row.student_id]))
+    : new Map();
   const photos = await db
     .prepare('SELECT * FROM photos WHERE batch_id = ? ORDER BY seq_index, id')
     .all(batchId);
@@ -744,8 +777,9 @@ async function sortBatch(batchId) {
     const setPhoto = tx.prepare('UPDATE photos SET student_id=?, is_marker=0 WHERE id=?');
     for (const p of photos) {
       const code = normalizeCode(p.qr_value);
-      if (code && byCode.has(code)) {
-        current = byCode.get(code);
+      const match = resolveProjectQr(code, projectCodes, byCode);
+      if (match) {
+        current = match.studentId;
         await setMarker.run(current, p.id);
         stats.markers++;
         continue;
@@ -788,7 +822,7 @@ const photoPublic = (p) => ({
 app.get('/api/students/:id/photos', requireStaff, ok(async (req, res) =>
   res.json(
     (await db
-      .prepare('SELECT * FROM photos WHERE student_id = ? ORDER BY COALESCE(captured_at,0), seq_index, id')
+      .prepare('SELECT * FROM photos WHERE student_id = ? AND project_id IS NULL ORDER BY COALESCE(captured_at,0), seq_index, id')
       .all(req.params.id))
       .map(photoPublic)
   )
@@ -799,9 +833,10 @@ app.get('/api/photos/unassigned', requireStaff, ok(async (req, res) =>
     (await db
       .prepare(
         `SELECT p.* FROM photos p WHERE p.student_id IS NULL AND p.is_marker = 0
+         AND ${req.query.projectId ? 'p.project_id = ?' : 'p.project_id IS NULL'}
          ORDER BY COALESCE(p.captured_at,0), p.seq_index, p.id LIMIT 500`
       )
-      .all())
+      .all(...(req.query.projectId ? [req.query.projectId] : [])))
       .map(photoPublic)
   )
 ));
@@ -853,11 +888,53 @@ app.delete(
 
 /* ------------------------------------------------------------- galleries */
 
+app.post('/api/projects/:projectId/students/:studentId/publish', requireStaff, ok(async (req, res) => {
+  const projectId = Number(req.params.projectId);
+  const studentId = Number(req.params.studentId);
+  const result = await publishProjectStudent(db, projectId, studentId, config().galleryDays, newProjectGalleryToken);
+  if (result.status === 'not-found') return res.status(404).json({ error: 'Project not found.' });
+  if (result.status === 'student-not-found') return res.status(404).json({ error: 'Student not found.' });
+  if (result.status === 'archived') return res.status(409).json({ error: 'Archived projects cannot publish new galleries.' });
+  res.json(result);
+}));
+
+app.post('/api/projects/:projectId/students/:studentId/unpublish', requireStaff, ok(async (req, res) => {
+  const projectId = Number(req.params.projectId);
+  const studentId = Number(req.params.studentId);
+  const project = await db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId);
+  if (!project) return res.status(404).json({ error: 'Project not found.' });
+  await unpublishProjectStudent(db, projectId, studentId);
+  res.json({ ok: true });
+}));
+
+app.post('/api/projects/:id/publish-ready', requireStaff, ok(async (req, res) => {
+  const projectId = Number(req.params.id);
+  const project = await db.prepare('SELECT id, archived_at FROM projects WHERE id = ?').get(projectId);
+  if (!project) return res.status(404).json({ error: 'Project not found.' });
+  if (project.archived_at) return res.status(409).json({ error: 'Archived projects cannot publish galleries.' });
+  const rows = await db.prepare(
+    `SELECT s.id FROM students s
+     WHERE s.active = 1
+       AND (SELECT COUNT(*) FROM photos ph
+            WHERE ph.project_id = ? AND ph.student_id = s.id AND ph.is_marker = 0 AND ph.hidden = 0) >= ?
+       AND NOT EXISTS (
+         SELECT 1 FROM project_students ps
+         WHERE ps.project_id = ? AND ps.student_id = s.id AND ps.published_at IS NOT NULL
+       )`
+  ).all(projectId, config().minPhotos, projectId);
+  let published = 0;
+  for (const student of rows) {
+    const result = await publishProjectStudent(db, projectId, student.id, config().galleryDays, newProjectGalleryToken);
+    if (result.status === 'published') published++;
+  }
+  res.json({ published });
+}));
+
 async function publishStudent(id) {
   const cfg = config();
   const s = await publishStudentRecord(db, id, cfg.galleryDays, newGalleryToken);
   if (!s) return null;
-  await db.prepare('UPDATE photos SET published = 1 WHERE student_id = ? AND is_marker = 0 AND hidden = 0').run(id);
+  await db.prepare('UPDATE photos SET published = 1 WHERE student_id = ? AND project_id IS NULL AND is_marker = 0 AND hidden = 0').run(id);
   return db.prepare(`${ROSTER_SQL} WHERE s.id = ?`).get(id);
 }
 
@@ -876,7 +953,7 @@ app.post(
   requireStaff,
   ok(async (req, res) => {
     await db.prepare('UPDATE students SET published_at = NULL WHERE id = ?').run(req.params.id);
-    await db.prepare('UPDATE photos SET published = 0 WHERE student_id = ?').run(req.params.id);
+    await db.prepare('UPDATE photos SET published = 0 WHERE student_id = ? AND project_id IS NULL').run(req.params.id);
     res.json({ ok: true });
   })
 );
@@ -889,7 +966,7 @@ app.post(
     const rows = await db
       .prepare(
         `${ROSTER_SQL} WHERE s.active = 1 AND s.published_at IS NULL
-         AND (SELECT COUNT(*) FROM photos p WHERE p.student_id = s.id AND p.is_marker = 0 AND p.hidden = 0) >= ?`
+         AND (SELECT COUNT(*) FROM photos p WHERE p.student_id = s.id AND p.project_id IS NULL AND p.is_marker = 0 AND p.hidden = 0) >= ?`
       )
       .all(cfg.minPhotos);
     for (const row of rows) await publishStudent(row.id);
@@ -915,7 +992,7 @@ app.get(
     const s = gallery.student;
     const photos = await db
       .prepare(
-        `SELECT id, captured_at FROM photos WHERE student_id = ? AND published = 1 AND hidden = 0 AND is_marker = 0
+        `SELECT id, captured_at FROM photos WHERE student_id = ? AND project_id IS NULL AND published = 1 AND hidden = 0 AND is_marker = 0
          ORDER BY COALESCE(captured_at,0), seq_index, id`
       )
       .all(s.id);
@@ -929,6 +1006,26 @@ app.get(
   })
 );
 
+app.get('/api/projects/gallery/:token', galleryLimiter, ok(async (req, res) => {
+  const gallery = await projectGalleryStudentByToken(db, req.params.token);
+  if (gallery.status === 'not-found') return res.status(404).json({ error: 'not-found' });
+  if (gallery.status === 'expired') return res.status(410).json({ error: 'expired' });
+  const student = gallery.student;
+  const photos = await projectGalleryPhotos(db, student.project_id, student.student_id);
+  res.json({
+    student: {
+      firstName: student.first_name,
+      lastName: student.last_name,
+      grade: student.grade,
+      teacher: student.teacher
+    },
+    project: { id: student.project_id, name: student.project_name },
+    expiresAt: student.expires_at,
+    photos: photos.map((photo) => ({ id: photo.id })),
+    branding: branding('published')
+  });
+}));
+
 const galleryPhotoFileHandler = ok(
   createGalleryPhotoFileHandler({
     db,
@@ -938,6 +1035,16 @@ const galleryPhotoFileHandler = ok(
   })
 );
 app.get('/api/gallery/:token/photo/:id', galleryLimiter, galleryPhotoFileHandler);
+
+const projectGalleryPhotoFileHandler = ok(
+  createProjectGalleryPhotoFileHandler({
+    db,
+    projectGalleryStudentByToken,
+    fullDirectory: UP_FULL,
+    thumbDirectory: UP_THUMB
+  })
+);
+app.get('/api/projects/gallery/:token/photo/:id', galleryLimiter, projectGalleryPhotoFileHandler);
 
 /* ----------------------------------------------------------------- email */
 
@@ -1373,6 +1480,96 @@ app.get('/brand/:file', (req, res) => {
 });
 
 app.get('/api/fonts', (req, res) => res.json(SAFE_FONTS));
+
+/* --------------------------------------------------------------- projects */
+
+app.get('/api/projects', requireStaff, ok(async (req, res) => {
+  const includeArchived = req.session.user.role === 'admin';
+  const rows = await db.prepare(
+    `SELECT id, name, created_at, archived_at
+     FROM projects ${includeArchived ? '' : 'WHERE archived_at IS NULL'}
+     ORDER BY created_at DESC, id DESC`
+  ).all();
+  res.json(rows);
+}));
+
+app.post('/api/projects', requireAdmin, ok(async (req, res) => {
+  const name = String(req.body?.name || '').trim();
+  if (!name || name.length > 191) return res.status(400).json({ error: 'Project name is required and must be 191 characters or fewer.' });
+  const result = await db.prepare('INSERT INTO projects (name, created_at) VALUES (?, ?)').run(name, Date.now());
+  res.status(201).json(await db.prepare(
+    'SELECT id, name, created_at, archived_at FROM projects WHERE id = ?'
+  ).get(result.lastInsertRowid));
+}));
+
+app.post('/api/projects/:id/archive', requireAdmin, ok(async (req, res) => {
+  const projectId = Number(req.params.id);
+  if (!Number.isSafeInteger(projectId) || projectId < 1) return res.status(400).json({ error: 'Invalid project ID.' });
+  const project = await db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId);
+  if (!project) return res.status(404).json({ error: 'Project not found.' });
+  await db.prepare('UPDATE projects SET archived_at = COALESCE(archived_at, ?) WHERE id = ?').run(Date.now(), projectId);
+  res.json(await db.prepare('SELECT id, name, created_at, archived_at FROM projects WHERE id = ?').get(projectId));
+}));
+
+app.get('/api/projects/:id/students', requireStaff, ok(async (req, res) => {
+  const projectId = Number(req.params.id);
+  const project = await db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId);
+  if (!project) return res.status(404).json({ error: 'Project not found.' });
+  const rows = await db.prepare(
+    `SELECT s.id, s.first_name, s.last_name, s.grade, s.teacher, s.active,
+       ps.qr_code, ps.gallery_token, ps.expires_at, ps.published_at,
+       (SELECT COUNT(*) FROM photos ph
+        WHERE ph.project_id = ? AND ph.student_id = s.id AND ph.is_marker = 0 AND ph.hidden = 0) AS photo_count
+     FROM students s
+     LEFT JOIN project_students ps ON ps.student_id = s.id AND ps.project_id = ?
+     ORDER BY s.last_name, s.first_name`
+  ).all(projectId, projectId);
+  res.json(rows.map((s) => ({
+    id: s.id,
+    firstName: s.first_name,
+    lastName: s.last_name,
+    grade: s.grade,
+    teacher: s.teacher,
+    active: Boolean(s.active),
+    qrCode: s.qr_code,
+    galleryToken: s.gallery_token,
+    expiresAt: s.expires_at,
+    publishedAt: s.published_at,
+    photoCount: Number(s.photo_count || 0)
+  })));
+}));
+
+app.get('/api/projects/:id/students/:studentId/photos', requireStaff, ok(async (req, res) => {
+  const projectId = Number(req.params.id);
+  const studentId = Number(req.params.studentId);
+  const photos = await db.prepare(
+    `SELECT * FROM photos WHERE project_id = ? AND student_id = ?
+     ORDER BY COALESCE(captured_at, 0), seq_index, id`
+  ).all(projectId, studentId);
+  res.json(photos.map(photoPublic));
+}));
+
+app.get('/api/projects/:id/cards.pdf', requireStaff, ok(async (req, res) => {
+  const projectId = Number(req.params.id);
+  const project = await db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId);
+  if (!project) return res.status(404).json({ error: 'Project not found.' });
+  if (project.archived_at) return res.status(409).json({ error: 'Archived projects cannot create new QR cards.' });
+  const grade = req.query.grade ? String(req.query.grade) : null;
+  const students = await db.prepare(
+    `SELECT * FROM students WHERE active = 1 ${grade ? 'AND grade = ?' : ''}
+     ORDER BY grade, teacher, last_name, first_name`
+  ).all(...(grade ? [grade] : []));
+  const cardsForProject = [];
+  for (const student of students) {
+    const result = await projectStudentQrCode(db, projectId, student.id);
+    if (result.status !== 'ready') throw new Error('Could not create project QR card for a student.');
+    cardsForProject.push({ ...student, qr_code: result.qrCode });
+  }
+  const b = branding('published');
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', 'inline; filename="project-qr-cards.pdf"');
+  await cards.streamCards(cardsForProject, { schoolName: b.schoolName, eventName: project.name, year: b.year }, res);
+}));
 
 /* ----------------------------------------------------------------- stats */
 

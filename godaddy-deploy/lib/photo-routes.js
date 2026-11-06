@@ -46,8 +46,36 @@ function createGalleryPhotoFileHandler({
 
     const student = gallery.student;
     const photo = await db
-      .prepare('SELECT * FROM photos WHERE id = ? AND student_id = ? AND published = 1 AND hidden = 0')
+      .prepare('SELECT * FROM photos WHERE id = ? AND student_id = ? AND project_id IS NULL AND published = 1 AND hidden = 0')
       .get(req.params.id, student.id);
+    if (!photo) return res.sendStatus(404);
+    if (req.query.download) {
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${student.last_name}-${student.first_name}-${photo.id}${path.extname(photo.file) || '.jpg'}"`
+      );
+    }
+    return sendPhotoFile(res, photo, req, fullDirectory, thumbDirectory, legacyAssetRoots);
+  };
+}
+
+function createProjectGalleryPhotoFileHandler({
+  db,
+  projectGalleryStudentByToken,
+  fullDirectory,
+  thumbDirectory,
+  legacyAssetRoots = LEGACY_ASSET_ROOTS
+}) {
+  return async (req, res) => {
+    const gallery = await projectGalleryStudentByToken(db, req.params.token);
+    if (gallery.status === 'not-found') return res.sendStatus(404);
+    if (gallery.status === 'expired') return res.sendStatus(410);
+
+    const student = gallery.student;
+    const photo = await db.prepare(
+      `SELECT * FROM photos
+       WHERE id = ? AND project_id = ? AND student_id = ? AND published = 1 AND hidden = 0 AND is_marker = 0`
+    ).get(req.params.id, student.project_id, student.student_id);
     if (!photo) return res.sendStatus(404);
     if (req.query.download) {
       res.setHeader(
@@ -61,5 +89,6 @@ function createGalleryPhotoFileHandler({
 
 module.exports = {
   createStaffPhotoFileHandler,
-  createGalleryPhotoFileHandler
+  createGalleryPhotoFileHandler,
+  createProjectGalleryPhotoFileHandler
 };

@@ -1,7 +1,17 @@
 import { $, $$, api, session, toast, esc, fmtDate } from '/assets/common.js';
 import { scan, ready as readerReady } from '/assets/qr-scan.js';
 
-const state = { students: [], stats: null, config: {}, branding: null, gallery: null, selected: new Set() };
+const state = {
+  students: [],
+  projects: [],
+  projectStudents: [],
+  activeProject: null,
+  stats: null,
+  config: {},
+  branding: null,
+  gallery: null,
+  selected: new Set()
+};
 
 function galleryUrl(token) {
   const base = String(state.config.publicUrl || '').replace(/\/+$/, '');
@@ -9,11 +19,17 @@ function galleryUrl(token) {
   return `${base}/g/${encodeURIComponent(token)}`;
 }
 
+function projectGalleryUrl(token) {
+  const base = String(state.config.publicUrl || '').replace(/\/+$/, '');
+  return base && token ? `${base}/p/${encodeURIComponent(token)}` : '';
+}
+
 /* ------------------------------------------------------------- startup */
 
 const me = await session();
 if (!me.user || !['staff', 'admin'].includes(me.user.role)) location.href = '/login';
 if (me.user.role !== 'admin') $('#staffAccountsCard').hidden = true;
+$('#createProjectCard').hidden = me.user.role !== 'admin';
 $('#who').textContent = `Signed in as ${me.user.username}`;
 state.config = me.config || {};
 
@@ -37,11 +53,175 @@ function show(view) {
   if (view === 'upload') loadBatches();
   if (view === 'floor') loadStats();
   if (view === 'settings' && me.user.role === 'admin') loadStaffAccounts();
+  if (view === 'projects') loadProjects();
 }
 $('#nav').addEventListener('click', (e) => {
   const b = e.target.closest('button[data-view]');
   if (b) show(b.dataset.view);
 });
+
+/* ------------------------------------------------------------- projects */
+
+function isProjectWritable(project = state.activeProject) {
+  return Boolean(project && !project.archived_at);
+}
+
+function renderProjectContext() {
+  const project = state.activeProject;
+  const status = !project
+    ? 'No project selected. Uploading is disabled.'
+    : project.archived_at
+      ? `${project.name} is archived. Its galleries remain available, but uploads and new publishing are disabled.`
+      : `Selected project: ${project.name}`;
+  $('#activeProjectStatus').textContent = status;
+  $('#uploadProjectStatus').textContent = status;
+  $('#files').disabled = !isProjectWritable();
+  $('#startUpload').disabled = busy || queuedFiles.length === 0 || !isProjectWritable();
+  $('#printProjectCards').disabled = !isProjectWritable();
+  $('#publishProjectReady').hidden = !project || Boolean(project.archived_at);
+  $('#galleryStudent').hidden = Boolean(project);
+  $('#projectGalleryStudent').hidden = !project;
+  $('#publishReady').hidden = Boolean(project);
+  $('#galleryEmailHistory').hidden = Boolean(project) || !state.gallery;
+  $('#resendGalleryEmail').hidden = Boolean(project);
+}
+
+async function loadProjects() {
+  const previous = state.activeProject?.id || Number(localStorage.getItem('pictureday.activeProject')) || null;
+  state.projects = await api('/api/projects');
+  const select = $('#activeProject');
+  select.innerHTML = '<option value="">Choose a project…</option>' +
+    state.projects.map((project) =>
+      `<option value="${project.id}">${esc(project.name)}${project.archived_at ? ' — archived' : ''}</option>`
+    ).join('');
+  state.activeProject = state.projects.find((project) => project.id === previous) || null;
+  select.value = state.activeProject ? String(state.activeProject.id) : '';
+  if (state.activeProject) localStorage.setItem('pictureday.activeProject', String(state.activeProject.id));
+  else localStorage.removeItem('pictureday.activeProject');
+  $('#projectTable tbody').innerHTML = state.projects.length
+    ? state.projects.map((project) => `<tr>
+        <td><b>${esc(project.name)}</b></td>
+        <td>${fmtDate(project.created_at)}</td>
+        <td>${project.archived_at ? '<span class="pill none">Archived</span>' : '<span class="pill live">Active</span>'}</td>
+        <td style="white-space:nowrap">
+          <button class="ghost small" data-select-project="${project.id}">Select</button>
+          ${me.user.role === 'admin' && !project.archived_at
+            ? `<button class="ghost small danger" data-archive-project="${project.id}">Archive</button>`
+            : ''}
+        </td>
+      </tr>`).join('')
+    : '<tr><td colspan="4" class="hint">No photo projects yet.</td></tr>';
+  renderProjectContext();
+  await loadProjectStudents();
+}
+
+async function selectProject(id) {
+  state.activeProject = state.projects.find((project) => project.id === Number(id)) || null;
+  if (state.activeProject) localStorage.setItem('pictureday.activeProject', String(state.activeProject.id));
+  else localStorage.removeItem('pictureday.activeProject');
+  $('#activeProject').value = state.activeProject ? String(state.activeProject.id) : '';
+  state.gallery = null;
+  renderProjectContext();
+  await loadProjectStudents();
+  await Promise.all([loadBatches(), loadReview()]);
+}
+
+$('#activeProject').addEventListener('change', () => selectProject($('#activeProject').value));
+
+$('#createProject').addEventListener('click', async () => {
+  const name = $('#newProjectName').value.trim();
+  if (!name) return toast('Enter a project name.', 'bad');
+  try {
+    const project = await api('/api/projects', { method: 'POST', body: { name } });
+    $('#newProjectName').value = '';
+    await loadProjects();
+    await selectProject(project.id);
+    toast(`${project.name} created.`, 'good');
+  } catch (error) {
+    toast(error.message, 'bad');
+  }
+});
+
+$('#projectTable').addEventListener('click', async (event) => {
+  const selectButton = event.target.closest('button[data-select-project]');
+  if (selectButton) {
+    await selectProject(selectButton.dataset.selectProject);
+    return;
+  }
+  const archiveButton = event.target.closest('button[data-archive-project]');
+  if (!archiveButton) return;
+  const project = state.projects.find((item) => item.id === Number(archiveButton.dataset.archiveProject));
+  if (!project || !confirm(`Archive “${project.name}”? Its photos and published links will be retained, but uploads and new publishing will stop.`)) return;
+  try {
+    await api(`/api/projects/${project.id}/archive`, { method: 'POST' });
+    await loadProjects();
+    toast(`${project.name} archived.`, 'good');
+  } catch (error) {
+    toast(error.message, 'bad');
+  }
+});
+
+async function loadProjectStudents() {
+  const project = state.activeProject;
+  state.projectStudents = project ? await api(`/api/projects/${project.id}/students`) : [];
+  if (!project) {
+    clearGallery();
+    const legacyStudentId = $('#galleryStudent').value;
+    if (legacyStudentId) await openGallery(legacyStudentId);
+    return;
+  }
+  const select = $('#projectGalleryStudent');
+  const keep = select.value;
+  select.innerHTML = '<option value="">Choose a student…</option>' +
+    state.projectStudents.map((student) =>
+      `<option value="${student.id}">${esc(student.lastName)}, ${esc(student.firstName)}${student.grade ? ` (${esc(student.grade)})` : ''}</option>`
+    ).join('');
+  select.value = state.projectStudents.some((student) => String(student.id) === keep) ? keep : '';
+  if (select.value) await openProjectGallery(select.value);
+  else clearGallery();
+}
+
+$('#projectGalleryStudent').addEventListener('change', () => openProjectGallery($('#projectGalleryStudent').value));
+
+function clearGallery() {
+  state.gallery = null;
+  $('#galleryStrip').innerHTML = '';
+  $('#galleryActions').hidden = true;
+  $('#galleryEmailHistory').hidden = true;
+  $('#openLink').hidden = true;
+}
+
+async function openProjectGallery(studentId) {
+  if (!studentId || !state.activeProject) return clearGallery();
+  const project = state.activeProject;
+  const student = state.projectStudents.find((item) => item.id === Number(studentId));
+  state.gallery = student ? { ...student, projectId: project.id, projectName: project.name } : null;
+  const photos = await api(`/api/projects/${project.id}/students/${studentId}/photos`);
+  if (Number($('#projectGalleryStudent').value) !== Number(studentId) || state.activeProject?.id !== project.id) return;
+  const shots = photos.filter((photo) => !photo.isMarker);
+  const gallery = state.gallery;
+  $('#galleryStatus').textContent = gallery.publishedAt
+    ? `Published ${fmtDate(gallery.publishedAt)} · link open until ${fmtDate(gallery.expiresAt)}`
+    : `${shots.length} photo${shots.length === 1 ? '' : 's'}, not published`;
+  $('#galleryStrip').innerHTML = shots.length
+    ? shots.map((photo) => `<div class="shot-card ${photo.hidden ? 'is-hidden' : ''}" data-id="${photo.id}">
+        <img src="/api/photos/${photo.id}/file?size=thumb" alt="" loading="lazy">
+        <div class="bar photo-actions">
+          <button class="ghost small" data-act="toggle" data-hidden="${photo.hidden}">${photo.hidden ? 'Show' : 'Hide'}</button>
+          <button class="ghost small" data-act="move">Move</button>
+          <button class="ghost small danger" data-act="delete">Delete</button>
+        </div>
+      </div>`).join('')
+    : '<p class="hint">No photos for this student in this project yet.</p>';
+  $('#galleryActions').hidden = false;
+  $('#publishOne').hidden = Boolean(project.archived_at);
+  $('#unpublishOne').hidden = !gallery.publishedAt;
+  const link = gallery.publishedAt ? projectGalleryUrl(gallery.galleryToken) : '';
+  $('#openLink').hidden = !link;
+  $('#openLink').href = link;
+  $('#galleryEmailHistory').hidden = true;
+  $('#resendGalleryEmail').hidden = true;
+}
 
 /* ---------------------------------------------------------------- floor */
 
@@ -103,8 +283,13 @@ $('#tiles').addEventListener('click', (e) => {
   const t = e.target.closest('.tile');
   if (!t) return;
   show('galleries');
-  $('#galleryStudent').value = t.dataset.id;
-  openGallery(t.dataset.id);
+  if (state.activeProject) {
+    $('#projectGalleryStudent').value = t.dataset.id;
+    openProjectGallery(t.dataset.id);
+  } else {
+    $('#galleryStudent').value = t.dataset.id;
+    openGallery(t.dataset.id);
+  }
 });
 
 /* --------------------------------------------------------------- roster */
@@ -274,6 +459,13 @@ $('#printCards').addEventListener('click', () => {
   window.open(`/api/cards.pdf${g ? `?grade=${encodeURIComponent(g)}` : ''}`, '_blank', 'noopener');
 });
 
+$('#printProjectCards').addEventListener('click', () => {
+  const project = state.activeProject;
+  if (!isProjectWritable(project)) return toast('Select an active project first.', 'bad');
+  const grade = $('#cardGrade').value;
+  window.open(`/api/projects/${project.id}/cards.pdf${grade ? `?grade=${encodeURIComponent(grade)}` : ''}`, '_blank', 'noopener');
+});
+
 /* --------------------------------------------------------------- upload */
 
 readerReady()
@@ -294,6 +486,7 @@ let busy = false;
 let queuedFiles = [];
 
 function stageFiles(list) {
+  if (!isProjectWritable()) return toast('Select an active photo project before staging uploads.', 'bad');
   if (busy) return toast('Still uploading the last batch.', 'bad');
   const images = list.filter((file) => /^image\//.test(file.type));
   if (!images.length) return toast('Those files were not images.', 'bad');
@@ -333,7 +526,7 @@ function renderUploadQueue() {
     list.append(item);
   });
   panel.hidden = queuedFiles.length === 0;
-  $('#startUpload').disabled = busy || queuedFiles.length === 0;
+  $('#startUpload').disabled = busy || queuedFiles.length === 0 || !isProjectWritable();
   $('#clearUploadQueue').disabled = busy || queuedFiles.length === 0;
 }
 
@@ -357,6 +550,8 @@ $('#startUpload').addEventListener('click', uploadQueuedFiles);
 
 async function uploadQueuedFiles() {
   if (!queuedFiles.length || busy) return;
+  const project = state.activeProject;
+  if (!isProjectWritable(project)) return toast('Select an active photo project before uploading.', 'bad');
   busy = true;
 
   const files = queuedFiles.slice();
@@ -367,7 +562,13 @@ async function uploadQueuedFiles() {
   const line = (t) => { log.textContent += t + '\n'; log.scrollTop = log.scrollHeight; };
 
   try {
-    const batch = await api('/api/batches', { method: 'POST', body: { name: $('#batchName').value || `Batch ${new Date().toLocaleString()}` } });
+    const batch = await api('/api/batches', {
+      method: 'POST',
+      body: {
+        name: $('#batchName').value || `Batch ${new Date().toLocaleString()}`,
+        projectId: project.id
+      }
+    });
     queuedFiles = [];
     renderUploadQueue();
     line(`Batch “${batch.name}” — ${files.length} files`);
@@ -422,10 +623,10 @@ async function uploadQueuedFiles() {
 }
 
 async function loadBatches() {
-  const rows = await api('/api/batches');
+  const rows = await api(`/api/batches${state.activeProject ? `?projectId=${state.activeProject.id}` : ''}`);
   $('#batchTable tbody').innerHTML = rows
     .map(
-      (b) => `<tr><td>${esc(b.name)}</td><td class="num">${b.photos}</td><td>${fmtDate(b.created_at)}</td>
+      (b) => `<tr><td>${esc(b.name)}</td><td>${esc(b.project_name || 'Legacy')}</td><td class="num">${b.photos}</td><td>${fmtDate(b.created_at)}</td>
         <td>${b.sorted_at ? fmtDate(b.sorted_at) : '<span class="pill wait">not sorted</span>'}</td>
         <td><button class="ghost small" data-batch="${b.id}">Sort again</button>
           <button class="ghost small danger" data-batch-delete="${b.id}" data-batch-name="${esc(b.name)}" data-batch-count="${b.photos}">Delete</button></td></tr>`
@@ -463,7 +664,8 @@ $('#batchTable').addEventListener('click', async (e) => {
 /* --------------------------------------------------------------- review */
 
 async function loadReview() {
-  const photos = await api('/api/photos/unassigned');
+  const projectQuery = state.activeProject ? `?projectId=${state.activeProject.id}` : '';
+  const photos = await api(`/api/photos/unassigned${projectQuery}`);
   state.selected.clear();
   updateSelCount();
   $('#reviewStrip').innerHTML = photos.length
@@ -524,14 +726,15 @@ $('#hideSelected').addEventListener('click', async () => {
 $('#galleryStudent').addEventListener('change', (e) => openGallery(e.target.value));
 
 async function openGallery(id) {
+  if (state.activeProject) return openProjectGallery(id);
   if (!id) {
-    state.gallery = null;
-    $('#galleryStrip').innerHTML = '';
-    $('#galleryActions').hidden = true;
-    $('#galleryEmailHistory').hidden = true;
+    clearGallery();
     $('#resendGalleryEmail').disabled = true;
     return;
   }
+  $('#publishOne').hidden = false;
+  $('#unpublishOne').hidden = false;
+  $('#resendGalleryEmail').hidden = false;
   const s = state.students.find((x) => x.id === Number(id));
   state.gallery = s;
   $('#resendGalleryEmail').disabled = true;
@@ -564,6 +767,12 @@ async function openGallery(id) {
   $('#openLink').href = link;
   $('#galleryEmailHistory').hidden = false;
   await loadGalleryEmailHistory(id);
+}
+
+async function refreshCurrentGallery() {
+  return state.activeProject
+    ? openProjectGallery($('#projectGalleryStudent').value)
+    : openGallery($('#galleryStudent').value);
 }
 
 async function deletePhoto(id) {
@@ -650,12 +859,12 @@ $('#galleryStrip').addEventListener('click', async (e) => {
   if (!btn) return;
   const id = btn.closest('.shot-card').dataset.id;
   if (btn.dataset.act === 'delete') {
-    if (await deletePhoto(id)) await openGallery($('#galleryStudent').value);
+    if (await deletePhoto(id)) await refreshCurrentGallery();
     return;
   }
   if (btn.dataset.act === 'toggle') {
     await api(`/api/photos/${id}/hide`, { method: 'POST', body: { hidden: btn.dataset.hidden !== 'true' } });
-    openGallery($('#galleryStudent').value);
+    refreshCurrentGallery();
   }
   if (btn.dataset.act === 'move') {
     const name = prompt('Move this photo to which student? Type part of the last name:');
@@ -666,11 +875,23 @@ $('#galleryStrip').addEventListener('click', async (e) => {
     if (!target) return;
     await api(`/api/photos/${id}/assign`, { method: 'POST', body: { studentId: target.id } });
     toast(`Moved to ${target.firstName} ${target.lastName}.`, 'good');
-    openGallery($('#galleryStudent').value);
+    refreshCurrentGallery();
   }
 });
 
 $('#publishOne').addEventListener('click', async () => {
+  if (state.activeProject) {
+    const id = $('#projectGalleryStudent').value;
+    if (!id || !isProjectWritable()) return;
+    try {
+      await api(`/api/projects/${state.activeProject.id}/students/${id}/publish`, { method: 'POST' });
+      toast('This project gallery is published.', 'good');
+      await loadProjectStudents();
+    } catch (error) {
+      toast(error.message, 'bad');
+    }
+    return;
+  }
   const id = $('#galleryStudent').value;
   if (!id) return;
   const s = await api(`/api/students/${id}/publish`, { method: 'POST' });
@@ -681,6 +902,14 @@ $('#publishOne').addEventListener('click', async () => {
 });
 
 $('#unpublishOne').addEventListener('click', async () => {
+  if (state.activeProject) {
+    const id = $('#projectGalleryStudent').value;
+    if (!id) return;
+    await api(`/api/projects/${state.activeProject.id}/students/${id}/unpublish`, { method: 'POST' });
+    toast('This project gallery is closed. Other project galleries are unchanged.', 'good');
+    await loadProjectStudents();
+    return;
+  }
   const id = $('#galleryStudent').value;
   if (!id) return;
   await api(`/api/students/${id}/unpublish`, { method: 'POST' });
@@ -691,6 +920,15 @@ $('#unpublishOne').addEventListener('click', async () => {
 });
 
 $('#copyLink').addEventListener('click', async () => {
+  if (state.activeProject) {
+    const student = state.gallery;
+    if (!student?.publishedAt || !student.galleryToken) return toast('Publish this project gallery first.', 'bad');
+    const link = projectGalleryUrl(student.galleryToken);
+    if (!link) return toast('Set the public gallery URL in Settings before copying family links.', 'bad');
+    await navigator.clipboard.writeText(link);
+    toast('Project gallery link copied.', 'good');
+    return;
+  }
   const s = state.students.find((x) => x.id === Number($('#galleryStudent').value));
   if (!s?.publishedAt || !s.galleryToken) return toast('Publish the gallery first.', 'bad');
   const link = galleryUrl(s.galleryToken);
@@ -700,11 +938,24 @@ $('#copyLink').addEventListener('click', async () => {
 });
 
 $('#publishReady').addEventListener('click', async () => {
+  if (state.activeProject) return;
   if (!confirm('Publish every student who has enough photos and is not published yet?')) return;
   const r = await api('/api/publish/ready', { method: 'POST' });
   toast(`${r.published} galleries published.`, 'good');
   loadStudents();
   loadStats();
+});
+
+$('#publishProjectReady').addEventListener('click', async () => {
+  if (!isProjectWritable()) return toast('Select an active project first.', 'bad');
+  if (!confirm(`Publish every ready gallery in “${state.activeProject.name}”? Other projects are unchanged.`)) return;
+  try {
+    const result = await api(`/api/projects/${state.activeProject.id}/publish-ready`, { method: 'POST' });
+    toast(`${result.published} project galleries published.`, 'good');
+    await loadProjectStudents();
+  } catch (error) {
+    toast(error.message, 'bad');
+  }
 });
 
 /* ---------------------------------------------------------------- email */
@@ -846,6 +1097,7 @@ document.addEventListener('keydown', (e) => e.key === 'Escape' && lightbox.class
 
 /* ----------------------------------------------------------------- go */
 
+await loadProjects();
 await loadStudents();
 await loadStats();
 fillConfig(state.config);

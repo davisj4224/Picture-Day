@@ -6,6 +6,8 @@ const mysql = require('mysql2');
 const REQUIRED_TABLES = [
   'users',
   'students',
+  'projects',
+  'project_students',
   'batches',
   'photos',
   'email_log',
@@ -16,8 +18,10 @@ const REQUIRED_TABLES = [
 const REQUIRED_COLUMNS = {
   users: ['id', 'username', 'password', 'role', 'must_change_password', 'created_at'],
   students: ['id', 'ext_id', 'first_name', 'last_name', 'grade', 'teacher', 'parent_email', 'parent_name', 'qr_code', 'gallery_token', 'expires_at', 'published_at', 'notes', 'active', 'created_at'],
-  batches: ['id', 'name', 'created_at', 'sorted_at'],
-  photos: ['id', 'batch_id', 'student_id', 'file', 'thumb', 'original', 'bytes', 'captured_at', 'seq_index', 'qr_value', 'is_marker', 'hidden', 'published', 'assigned_by', 'created_at'],
+  projects: ['id', 'name', 'created_at', 'archived_at'],
+  project_students: ['project_id', 'student_id', 'qr_code', 'gallery_token', 'expires_at', 'published_at'],
+  batches: ['id', 'name', 'project_id', 'created_at', 'sorted_at'],
+  photos: ['id', 'batch_id', 'student_id', 'project_id', 'file', 'thumb', 'original', 'bytes', 'captured_at', 'seq_index', 'qr_value', 'is_marker', 'hidden', 'published', 'assigned_by', 'created_at'],
   email_log: ['id', 'student_id', 'to_email', 'status', 'detail', 'sent_at'],
   gallery_email_attempts: ['id', 'student_id', 'recipient_email', 'email_type', 'attempted_at', 'status', 'error_message'],
   settings: ['key', 'value'],
@@ -164,16 +168,40 @@ async function initialize() {
       created_at BIGINT NOT NULL,
       KEY idx_students_ext_id (ext_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+    `CREATE TABLE IF NOT EXISTS projects (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      name VARCHAR(191) NOT NULL,
+      created_at BIGINT NOT NULL,
+      archived_at BIGINT NULL,
+      KEY idx_projects_active (archived_at, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+    `CREATE TABLE IF NOT EXISTS project_students (
+      project_id BIGINT UNSIGNED NOT NULL,
+      student_id BIGINT UNSIGNED NOT NULL,
+      qr_code VARCHAR(80) NULL UNIQUE,
+      gallery_token VARCHAR(128) NULL UNIQUE,
+      expires_at BIGINT NULL,
+      published_at BIGINT NULL,
+      PRIMARY KEY (project_id, student_id),
+      KEY idx_project_students_student (student_id),
+      KEY idx_project_students_project_published (project_id, published_at),
+      CONSTRAINT fk_project_students_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      CONSTRAINT fk_project_students_student FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
     `CREATE TABLE IF NOT EXISTS batches (
       id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
       name VARCHAR(255) NOT NULL,
+      project_id BIGINT UNSIGNED NULL,
       created_at BIGINT NOT NULL,
-      sorted_at BIGINT NULL
+      sorted_at BIGINT NULL,
+      KEY idx_batches_project (project_id),
+      CONSTRAINT fk_batches_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
     `CREATE TABLE IF NOT EXISTS photos (
       id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
       batch_id BIGINT UNSIGNED NULL,
       student_id BIGINT UNSIGNED NULL,
+      project_id BIGINT UNSIGNED NULL,
       file VARCHAR(255) NOT NULL,
       thumb VARCHAR(255) NULL,
       original VARCHAR(255) NULL,
@@ -188,8 +216,10 @@ async function initialize() {
       created_at BIGINT NOT NULL,
       KEY idx_photos_student (student_id),
       KEY idx_photos_batch (batch_id, captured_at, seq_index),
+      KEY idx_photos_project_student (project_id, student_id, published, hidden),
       CONSTRAINT fk_photos_batch FOREIGN KEY (batch_id) REFERENCES batches(id) ON DELETE CASCADE,
-      CONSTRAINT fk_photos_student FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE SET NULL
+      CONSTRAINT fk_photos_student FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE SET NULL,
+      CONSTRAINT fk_photos_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
     `CREATE TABLE IF NOT EXISTS email_log (
       id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -225,6 +255,44 @@ async function initialize() {
   ];
 
   for (const sql of schema) await pool.query(sql);
+
+  for (const [table, column] of [['batches', 'project_id'], ['photos', 'project_id']]) {
+    const [existing] = await pool.execute(
+      `SELECT 1 FROM information_schema.columns
+       WHERE table_schema = ? AND table_name = ? AND column_name = ?`,
+      [process.env.DB_NAME, table, column]
+    );
+    if (!existing.length) {
+      await pool.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` BIGINT UNSIGNED NULL`);
+    }
+  }
+  const [batchIndex] = await pool.execute(
+    `SELECT 1 FROM information_schema.statistics
+     WHERE table_schema = ? AND table_name = 'batches' AND index_name = 'idx_batches_project'`,
+    [process.env.DB_NAME]
+  );
+  if (!batchIndex.length) await pool.query('ALTER TABLE batches ADD KEY idx_batches_project (project_id)');
+  const [photoIndex] = await pool.execute(
+    `SELECT 1 FROM information_schema.statistics
+     WHERE table_schema = ? AND table_name = 'photos' AND index_name = 'idx_photos_project_student'`,
+    [process.env.DB_NAME]
+  );
+  if (!photoIndex.length) {
+    await pool.query('ALTER TABLE photos ADD KEY idx_photos_project_student (project_id, student_id, published, hidden)');
+  }
+  for (const [table, constraint] of [['batches', 'fk_batches_project'], ['photos', 'fk_photos_project']]) {
+    const [existing] = await pool.execute(
+      `SELECT 1 FROM information_schema.table_constraints
+       WHERE constraint_schema = ? AND table_name = ? AND constraint_name = ?`,
+      [process.env.DB_NAME, table, constraint]
+    );
+    if (!existing.length) {
+      await pool.query(
+        `ALTER TABLE \`${table}\` ADD CONSTRAINT \`${constraint}\`
+         FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL`
+      );
+    }
+  }
 
   const [passwordColumn] = await pool.execute(
     `SELECT 1 FROM information_schema.columns
@@ -343,7 +411,11 @@ async function newQrCode() {
   const cfg = config();
   for (let i = 0; i < 50; i++) {
     const code = `${cfg.codePrefix}-${cfg.year}-${randomCode(5)}`;
-    if (!(await db.prepare('SELECT 1 FROM students WHERE qr_code = ?').get(code))) return code;
+    const [student, project] = await Promise.all([
+      db.prepare('SELECT 1 FROM students WHERE qr_code = ?').get(code),
+      db.prepare('SELECT 1 FROM project_students WHERE qr_code = ?').get(code)
+    ]);
+    if (!student && !project) return code;
   }
   throw new Error('Could not generate a unique QR code');
 }

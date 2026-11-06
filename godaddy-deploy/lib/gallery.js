@@ -71,7 +71,7 @@ async function galleryTokenHealth(db, token, now = Date.now()) {
 
   const photoCount = await db.prepare(
     `SELECT COUNT(*) AS photo_count FROM photos
-     WHERE student_id = ? AND published = 1 AND hidden = 0 AND is_marker = 0`
+     WHERE student_id = ? AND project_id IS NULL AND published = 1 AND hidden = 0 AND is_marker = 0`
   ).get(student.id);
   const hasPublishedAt = student.published_at !== null && student.published_at !== undefined;
   const hasExpiresAt = student.expires_at !== null && student.expires_at !== undefined;

@@ -17,6 +17,7 @@
 
     <nav id="nav">
       <button data-view="floor" aria-current="true">Picture day floor</button>
+      <button data-view="projects">Photo shoot projects</button>
       <button data-view="roster">Roster <span class="tag" id="tagRoster">0</span></button>
       <button data-view="cards">QR cards</button>
       <button data-view="upload">Upload photos</button>
@@ -64,6 +65,37 @@
       <div class="card">
         <h2>What to do next</h2>
         <div id="nextSteps"></div>
+      </div>
+    </section>
+
+    <!-- ----------------------------------------------------- projects -->
+    <section class="view" id="view-projects">
+      <div class="head">
+        <div>
+          <h1>Photo shoot projects</h1>
+          <p>Each project has its own photos, galleries, QR options, and publication status. The student roster and existing student QR cards are shared.</p>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Select a project</h2>
+        <div class="row">
+          <select id="activeProject" style="max-width:380px"><option value="">Choose a project…</option></select>
+          <span id="activeProjectStatus" class="hint" style="margin:0">No project selected. Uploading is disabled.</span>
+        </div>
+      </div>
+      <div class="card" id="createProjectCard" hidden>
+        <h2>Create a project</h2>
+        <div class="row">
+          <input type="text" id="newProjectName" maxlength="191" placeholder="Fall Pictures" style="max-width:360px">
+          <button class="primary" id="createProject">Create project</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Projects</h2>
+        <div style="overflow-x:auto"><table id="projectTable">
+          <thead><tr><th>Project</th><th>Created</th><th>Status</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table></div>
       </div>
     </section>
 
@@ -123,7 +155,9 @@
         <div class="row">
           <select id="cardGrade" style="max-width:200px"><option value="">Every active student</option></select>
           <button class="primary" id="printCards">Open card PDF</button>
+          <button id="printProjectCards">Open selected project's QR cards</button>
         </div>
+        <p class="hint">Project-specific cards are optional. Existing student cards also work for every selected project.</p>
       </div>
 
       <div class="card">
@@ -152,6 +186,7 @@
       </div>
 
       <div class="card">
+        <p class="hint" id="uploadProjectStatus">Select an active project in Photo shoot projects before uploading.</p>
         <div class="field" style="max-width:340px">
           <label for="batchName">Name this batch</label>
           <input type="text" id="batchName" placeholder="Card 1 — Tuesday morning">
@@ -182,7 +217,7 @@
       <div class="card">
         <h2>Recent batches</h2>
         <div style="overflow-x:auto"><table id="batchTable">
-          <thead><tr><th>Batch</th><th>Photos</th><th>Uploaded</th><th>Sorted</th><th></th></tr></thead>
+          <thead><tr><th>Batch</th><th>Project</th><th>Photos</th><th>Uploaded</th><th>Sorted</th><th></th></tr></thead>
           <tbody></tbody>
         </table></div>
       </div>
@@ -221,8 +256,10 @@
       <div class="card">
         <div class="row" style="margin-bottom:12px">
           <select id="galleryStudent" style="max-width:340px"><option value="">Choose a student…</option></select>
+          <select id="projectGalleryStudent" style="max-width:340px" hidden><option value="">Choose a student…</option></select>
           <span id="galleryStatus" class="hint" style="margin:0"></span>
         </div>
+        <button class="primary small" id="publishProjectReady" hidden>Publish everyone ready in this project</button>
         <div class="strip" id="galleryStrip"></div>
         <div class="row" id="galleryActions" style="margin-top:14px" hidden>
           <button class="primary" id="publishOne">Publish this gallery</button>

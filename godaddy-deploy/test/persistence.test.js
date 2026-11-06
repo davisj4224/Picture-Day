@@ -20,6 +20,8 @@ test('schema is additive and includes all persistent application tables', () => 
   for (const table of [
     'users',
     'students',
+    'projects',
+    'project_students',
     'photos',
     'batches',
     'settings',
@@ -71,6 +73,8 @@ test('MySQL state and file references survive schema re-initialization', {
   let galleryStudentId;
   let batchId;
   let photoId;
+  let projectId;
+  let projectBatchId;
 
   try {
     await initialize();
@@ -128,6 +132,23 @@ test('MySQL state and file references survive schema re-initialization', {
       `INSERT INTO photos (batch_id, file, original, seq_index, qr_value, is_marker, hidden, created_at)
        VALUES (?, ?, ?, ?, ?, 0, 0, ?)`
     ).run(batchId, `${suffix}-following.jpg`, 'following.jpg', 1, null, Date.now());
+    const project = await db.prepare(
+      'INSERT INTO projects (name, created_at) VALUES (?, ?)'
+    ).run(`Winter ${suffix}`, Date.now());
+    projectId = project.lastInsertRowid;
+    const projectQr = `PD-P${projectId}-${suffix.slice(0, 12).toUpperCase()}`;
+    const projectGalleryToken = crypto.randomBytes(24).toString('base64url');
+    await db.prepare(
+      `INSERT INTO project_students (project_id, student_id, qr_code, gallery_token, expires_at, published_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(projectId, galleryStudentId, projectQr, projectGalleryToken, Date.now() + 86400000, Date.now());
+    projectBatchId = (await db.prepare(
+      'INSERT INTO batches (name, project_id, created_at) VALUES (?, ?, ?)'
+    ).run(`Project batch ${suffix}`, projectId, Date.now())).lastInsertRowid;
+    await db.prepare(
+      `INSERT INTO photos (batch_id, project_id, student_id, file, original, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(projectBatchId, projectId, galleryStudentId, `${suffix}-project.jpg`, 'project.jpg', Date.now());
     await db.transaction(async (tx) => {
       const roster = await tx.prepare('SELECT id, qr_code FROM students').all();
       const studentsByCode = new Map(roster.map((row) => [row.qr_code.toUpperCase(), row.id]));
@@ -167,7 +188,17 @@ test('MySQL state and file references survive schema re-initialization', {
     assert.equal(persistedGallery.student.expires_at > Date.now(), true);
     assert.deepEqual(databaseModule.getSetting(settingKey), { marker: suffix }, 'settings load from MySQL');
     assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM batches WHERE id = ?').get(batchId)).n, 1);
+    assert.equal((await db.prepare('SELECT project_id FROM batches WHERE id = ?').get(batchId)).project_id, null);
     assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM photos WHERE batch_id = ? AND student_id = ?').get(batchId, studentId)).n, 2);
+    assert.equal((await db.prepare('SELECT project_id FROM photos WHERE id = ?').get(photoId)).project_id, null);
+    assert.equal((await db.prepare('SELECT project_id FROM batches WHERE id = ?').get(projectBatchId)).project_id, projectId);
+    assert.equal((await db.prepare('SELECT project_id FROM photos WHERE project_id = ? AND batch_id = ?').get(projectId, projectBatchId)).project_id, projectId);
+    assert.equal((await db.prepare('SELECT qr_code FROM students WHERE id = ?').get(galleryStudentId)).qr_code, `PD-2026-IMPORT-${suffix}`);
+    const projectGallery = await db.prepare(
+      'SELECT gallery_token, published_at FROM project_students WHERE project_id = ? AND student_id = ?'
+    ).get(projectId, galleryStudentId);
+    assert.equal(projectGallery.gallery_token, projectGalleryToken);
+    assert.ok(projectGallery.published_at);
     const sortedPhotos = await db.prepare(
       'SELECT student_id, is_marker, hidden, qr_value FROM photos WHERE batch_id = ? ORDER BY seq_index'
     ).all(batchId);
@@ -193,6 +224,10 @@ test('MySQL state and file references survive schema re-initialization', {
 
     await db.prepare('DELETE FROM students WHERE id = ?').run(studentId);
     await db.prepare('DELETE FROM students WHERE id = ?').run(galleryStudentId);
+    await db.prepare('UPDATE projects SET archived_at = ? WHERE id = ?').run(Date.now(), projectId);
+    assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM photos WHERE project_id = ?').get(projectId)).n, 1);
+    await db.prepare('DELETE FROM batches WHERE id = ?').run(projectBatchId);
+    await db.prepare('DELETE FROM projects WHERE id = ?').run(projectId);
     await db.prepare('DELETE FROM users WHERE username = ?').run(username);
     await db.prepare('DELETE FROM settings WHERE `key` = ?').run(settingKey);
   } finally {

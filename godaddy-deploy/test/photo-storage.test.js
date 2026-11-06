@@ -467,7 +467,7 @@ test('photo file routes keep their staff and gallery authorization guards', () =
   assert.match(serverSource, /app\.get\([\s\S]*'\/api\/gallery\/:token\/photo\/:id',\s*galleryLimiter/);
   assert.match(
     photoRoutesSource,
-    /WHERE id = \? AND student_id = \? AND published = 1 AND hidden = 0/
+    /WHERE id = \? AND student_id = \? AND project_id IS NULL AND published = 1 AND hidden = 0/
   );
   assert.match(photoRoutesSource, /createStaffPhotoFileHandler/);
   assert.match(photoRoutesSource, /createGalleryPhotoFileHandler/);

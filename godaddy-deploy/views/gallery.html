@@ -106,7 +106,9 @@ async function sampleGallery() {
 }
 
 async function realGallery() {
-  const res = await fetch(`/api/gallery/${encodeURIComponent(token)}`);
+  const projectGallery = location.pathname.startsWith('/p/');
+  const apiBase = projectGallery ? '/api/projects/gallery' : '/api/gallery';
+  const res = await fetch(`${apiBase}/${encodeURIComponent(token)}`);
   if (!res.ok) {
     header(await fetch('/api/branding').then((r) => r.json()));
     if (res.status === 410)
@@ -118,6 +120,7 @@ async function realGallery() {
 
   const data = await res.json();
   header(data.branding);
+  if (data.project) document.getElementById('event').textContent = data.project.name;
   applyLayout(data.branding.layouts?.gallery);
   document.title = `${data.student.firstName}'s photos`;
   document.getElementById('who').textContent = `${data.student.firstName} ${data.student.lastName}`;
@@ -137,7 +140,7 @@ async function realGallery() {
   grid.innerHTML = photos
     .map(
       (p, i) =>
-        `<button class="gal-item" data-i="${i}" aria-label="Open photo ${i + 1}"><img loading="lazy" src="/api/gallery/${encodeURIComponent(token)}/photo/${p.id}?size=thumb" alt="Photo ${i + 1}"></button>`
+        `<button class="gal-item" data-i="${i}" aria-label="Open photo ${i + 1}"><img loading="lazy" src="${apiBase}/${encodeURIComponent(token)}/photo/${p.id}?size=thumb" alt="Photo ${i + 1}"></button>`
     )
     .join('');
 
@@ -150,9 +153,9 @@ async function realGallery() {
   function open(i) {
     idx = (i + photos.length) % photos.length;
     const id = photos[idx].id;
-    big.src = `/api/gallery/${encodeURIComponent(token)}/photo/${id}`;
+    big.src = `${apiBase}/${encodeURIComponent(token)}/photo/${id}`;
     big.alt = `Photo ${idx + 1} of ${photos.length}`;
-    save.href = `/api/gallery/${encodeURIComponent(token)}/photo/${id}?download=1`;
+    save.href = `${apiBase}/${encodeURIComponent(token)}/photo/${id}?download=1`;
     count.textContent = `${idx + 1} of ${photos.length}`;
     viewer.classList.add('on');
     document.getElementById('close').focus();

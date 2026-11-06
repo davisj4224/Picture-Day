@@ -22,6 +22,7 @@ function fakeDatabase(initialStudent, { persistUpdates = true, photos = [] } = {
               return {
                 photo_count: photos.filter((photo) =>
                   photo.student_id === Number(value) &&
+                  photo.project_id == null &&
                   photo.published === 1 &&
                   photo.hidden === 0 &&
                   photo.is_marker === 0
@@ -199,10 +200,10 @@ test('staff gallery-token health diagnostics distinguish all states without priv
   for (const entry of cases) {
     const { db } = fakeDatabase(entry.student, {
       photos: [
-        { student_id: entry.student?.id, published: 1, hidden: 0, is_marker: 0 },
-        { student_id: entry.student?.id, published: 0, hidden: 0, is_marker: 0 },
-        { student_id: entry.student?.id, published: 1, hidden: 1, is_marker: 0 },
-        { student_id: entry.student?.id, published: 1, hidden: 0, is_marker: 1 }
+        { student_id: entry.student?.id, project_id: null, published: 1, hidden: 0, is_marker: 0 },
+        { student_id: entry.student?.id, project_id: null, published: 0, hidden: 0, is_marker: 0 },
+        { student_id: entry.student?.id, project_id: null, published: 1, hidden: 1, is_marker: 0 },
+        { student_id: entry.student?.id, project_id: null, published: 1, hidden: 0, is_marker: 1 }
       ]
     });
     const result = await galleryTokenHealth(db, entry.student?.gallery_token || 'missing-token', now);

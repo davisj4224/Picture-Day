@@ -245,6 +245,14 @@ changes should happen in the design studio rather than in code.
 
 ## The picture day workflow
 
+For each shoot, an administrator creates and selects a project in **Photo shoot
+projects** (for example Fall Pictures or Spring Pictures). Upload batches and
+student galleries are scoped to that project. Existing student QR cards work
+for every project; printing project-specific cards is optional. Publish or
+unpublish a student's gallery in the selected project without affecting that
+student's galleries in other projects. Archiving stops new uploads and
+publishing, while retaining the project's records and existing links.
+
 **A week before**
 
 1. Roster → Import CSV. Headers can be named loosely — `First Name`,
@@ -266,7 +274,7 @@ in about two seconds each.
 
 **Afterwards**
 
-4. Upload photos → name the batch → drop the whole camera card in. Your browser
+4. Select the photo project, then Upload photos → name the batch → drop the whole camera card in. Your browser
    reads each photo, finds the cards, makes a preview, and uploads. Leave the
    tab open; 2,000 photos takes a while.
 5. Review → anything that could not be attached to a student.
@@ -308,7 +316,9 @@ to vendor it for fully offline use.
 Publishing a student mints a 32-character random token and a link like
 `/g/Qm9vX3JhbmRvbV9zdHJpbmc`. It is not guessable, it is not listed anywhere,
 and it stops working on the expiry date (Settings → galleries stay open for N
-days). Unpublishing closes it immediately.
+days). Unpublishing closes it immediately. Project galleries have separate
+tokens and `/p/...` links; their publication and expiry are independent of the
+legacy student gallery and of other projects.
 
 Set **Settings → Address families will use** to whatever hostname families will
 actually type, or the links in emails will point at `localhost`.
