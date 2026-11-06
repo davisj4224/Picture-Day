@@ -30,6 +30,7 @@ const me = await session();
 if (!me.user || !['staff', 'admin'].includes(me.user.role)) location.href = '/login';
 if (me.user.role !== 'admin') $('#staffAccountsCard').hidden = true;
 $('#createProjectCard').hidden = me.user.role !== 'admin';
+$('#projectEmailCard').hidden = me.user.role !== 'admin';
 $('#who').textContent = `Signed in as ${me.user.username}`;
 state.config = me.config || {};
 
@@ -977,6 +978,7 @@ async function loadPending() {
   $('#emBody').value = cfg.emailBody;
   $('#emFrom').value = cfg.emailFrom || '';
   $('#emReply').value = cfg.emailReplyTo || '';
+  if (me.user.role === 'admin') await loadProjectEmailProjects();
 }
 
 $('#pendAll').addEventListener('change', (e) =>
@@ -1013,6 +1015,119 @@ $('#sendEmails').addEventListener('click', async () => {
     loadPending();
     loadStats();
   } catch (e) { toast(e.message, 'bad'); }
+});
+
+let projectEmailPreview = null;
+
+async function loadProjectEmailProjects() {
+  const projects = await api('/api/projects');
+  const available = projects.filter((project) => !project.archived_at);
+  const select = $('#projectEmailProject');
+  const selected = select.value || (state.activeProject && !state.activeProject.archived_at
+    ? String(state.activeProject.id)
+    : '');
+  select.innerHTML = '<option value="">Choose a project…</option>' +
+    available.map((project) => `<option value="${project.id}">${esc(project.name)}</option>`).join('');
+  select.value = available.some((project) => String(project.id) === selected) ? selected : '';
+  await loadProjectEmailRecipients();
+}
+
+function resetProjectEmailPreview() {
+  projectEmailPreview = null;
+  $('#projectEmailPreview').hidden = true;
+  $('#projectEmailPreview').textContent = '';
+  $('#sendProjectEmails').disabled = true;
+}
+
+async function loadProjectEmailRecipients() {
+  resetProjectEmailPreview();
+  const id = $('#projectEmailProject').value;
+  const body = $('#projectEmailRecipients tbody');
+  if (!id) {
+    body.innerHTML = '<tr><td colspan="3" class="hint">Choose a project to see eligible recipients.</td></tr>';
+    $('#projectEmailCount').textContent = '';
+    $('#projectEmailStatus').textContent = '';
+    $('#projectEmailExport').hidden = true;
+    return;
+  }
+  const result = await api(`/api/projects/${id}/email/recipients`);
+  const recipients = result.recipients;
+  body.innerHTML = recipients.length
+    ? recipients.map((student) => `<tr><td><input type="checkbox" data-project-email="${student.id}" checked style="width:auto"></td>
+        <td>${esc(student.lastName)}, ${esc(student.firstName)}</td><td>${esc(student.parentEmail)}</td></tr>`).join('')
+    : '<tr><td colspan="3" class="hint">No published, unexpired project galleries with valid parent emails.</td></tr>';
+  $('#projectEmailStatus').textContent = `${result.project.name}: ${recipients.length} eligible parent(s).`;
+  $('#projectEmailCount').textContent = `${recipients.length} eligible`;
+  $('#projectEmailExport').href = `/api/email/export.csv?projectId=${encodeURIComponent(id)}`;
+  $('#projectEmailExport').hidden = false;
+  updateProjectEmailCount();
+}
+
+function selectedProjectEmailIds() {
+  return $$('#projectEmailRecipients input[data-project-email]:checked')
+    .map((checkbox) => Number(checkbox.dataset.projectEmail));
+}
+
+function updateProjectEmailCount() {
+  const count = selectedProjectEmailIds().length;
+  $('#projectEmailCount').textContent = `${count} selected`;
+  resetProjectEmailPreview();
+}
+
+$('#projectEmailProject').addEventListener('change', () => {
+  loadProjectEmailRecipients().catch((error) => toast(error.message, 'bad'));
+});
+
+$('#projectEmailRecipients').addEventListener('change', (event) => {
+  if (event.target.matches('input[data-project-email]')) updateProjectEmailCount();
+});
+
+$('#projectEmailAll').addEventListener('change', (event) => {
+  $$('#projectEmailRecipients input[data-project-email]')
+    .forEach((checkbox) => { checkbox.checked = event.target.checked; });
+  updateProjectEmailCount();
+});
+
+$('#previewProjectEmails').addEventListener('click', async () => {
+  const projectId = $('#projectEmailProject').value;
+  const ids = selectedProjectEmailIds();
+  if (!projectId || !ids.length) return toast('Choose a project and at least one recipient.', 'bad');
+  try {
+    projectEmailPreview = await api(`/api/projects/${projectId}/email/preview`, {
+      method: 'POST',
+      body: { ids }
+    });
+    const sample = projectEmailPreview.preview;
+    $('#projectEmailPreview').textContent =
+      `Project: ${projectEmailPreview.projectName}\nRecipients: ${projectEmailPreview.recipientCount}\n` +
+      `Preview for: ${sample.student}\nSubject: ${sample.subject}\nGallery link: ${sample.galleryLink}\n\n${sample.text}`;
+    $('#projectEmailPreview').hidden = false;
+    $('#sendProjectEmails').disabled = false;
+  } catch (error) {
+    toast(error.message, 'bad');
+  }
+});
+
+$('#sendProjectEmails').addEventListener('click', async () => {
+  if (!projectEmailPreview) return;
+  const projectId = $('#projectEmailProject').value;
+  const ids = selectedProjectEmailIds();
+  if (!ids.length) return toast('Choose at least one recipient.', 'bad');
+  if (!confirm(`Send ${ids.length} project gallery email(s) for “${projectEmailPreview.projectName}”?`)) return;
+  $('#sendProjectEmails').disabled = true;
+  try {
+    const result = await api(`/api/projects/${projectId}/email/send`, {
+      method: 'POST',
+      body: { ids }
+    });
+    toast(`${result.attempted} attempted; ${result.acceptedByGateway} accepted by gateway; ${result.failed} failed. Gateway acceptance does not confirm inbox delivery.`,
+      result.failed ? 'bad' : 'good');
+    resetProjectEmailPreview();
+    await loadProjectEmailRecipients();
+  } catch (error) {
+    toast(error.message, 'bad');
+    $('#sendProjectEmails').disabled = false;
+  }
 });
 
 /* ------------------------------------------------------------- settings */

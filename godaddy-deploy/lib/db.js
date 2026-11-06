@@ -23,7 +23,7 @@ const REQUIRED_COLUMNS = {
   batches: ['id', 'name', 'project_id', 'created_at', 'sorted_at'],
   photos: ['id', 'batch_id', 'student_id', 'project_id', 'file', 'thumb', 'original', 'bytes', 'captured_at', 'seq_index', 'qr_value', 'is_marker', 'hidden', 'published', 'assigned_by', 'created_at'],
   email_log: ['id', 'student_id', 'to_email', 'status', 'detail', 'sent_at'],
-  gallery_email_attempts: ['id', 'student_id', 'recipient_email', 'email_type', 'attempted_at', 'status', 'error_message'],
+  gallery_email_attempts: ['id', 'student_id', 'project_id', 'recipient_email', 'email_type', 'attempted_at', 'status', 'error_message'],
   settings: ['key', 'value'],
   sessions: ['sid', 'sess', 'expires_at']
 };
@@ -234,13 +234,16 @@ async function initialize() {
     `CREATE TABLE IF NOT EXISTS gallery_email_attempts (
       id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
       student_id BIGINT UNSIGNED NOT NULL,
+      project_id BIGINT UNSIGNED NULL,
       recipient_email VARCHAR(254) NOT NULL,
       email_type VARCHAR(32) NOT NULL,
       attempted_at BIGINT NOT NULL,
       status VARCHAR(32) NOT NULL,
       error_message VARCHAR(300) NULL,
       KEY idx_gallery_email_attempts_student_time (student_id, attempted_at),
-      CONSTRAINT fk_gallery_attempt_student FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
+      KEY idx_gallery_attempts_project_student_time (project_id, student_id, attempted_at),
+      CONSTRAINT fk_gallery_attempt_student FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
+      CONSTRAINT fk_gallery_attempt_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
     `CREATE TABLE IF NOT EXISTS settings (
       \`key\` VARCHAR(191) NOT NULL PRIMARY KEY,
@@ -265,6 +268,37 @@ async function initialize() {
     if (!existing.length) {
       await pool.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` BIGINT UNSIGNED NULL`);
     }
+  }
+  const [attemptProjectColumn] = await pool.execute(
+    `SELECT 1 FROM information_schema.columns
+     WHERE table_schema = ? AND table_name = 'gallery_email_attempts' AND column_name = 'project_id'`,
+    [process.env.DB_NAME]
+  );
+  if (!attemptProjectColumn.length) {
+    await pool.query('ALTER TABLE gallery_email_attempts ADD COLUMN project_id BIGINT UNSIGNED NULL AFTER student_id');
+  }
+  const [attemptProjectIndex] = await pool.execute(
+    `SELECT 1 FROM information_schema.statistics
+     WHERE table_schema = ? AND table_name = 'gallery_email_attempts'
+       AND index_name = 'idx_gallery_attempts_project_student_time'`,
+    [process.env.DB_NAME]
+  );
+  if (!attemptProjectIndex.length) {
+    await pool.query(
+      'ALTER TABLE gallery_email_attempts ADD KEY idx_gallery_attempts_project_student_time (project_id, student_id, attempted_at)'
+    );
+  }
+  const [attemptProjectConstraint] = await pool.execute(
+    `SELECT 1 FROM information_schema.table_constraints
+     WHERE constraint_schema = ? AND table_name = 'gallery_email_attempts'
+       AND constraint_name = 'fk_gallery_attempt_project'`,
+    [process.env.DB_NAME]
+  );
+  if (!attemptProjectConstraint.length) {
+    await pool.query(
+      `ALTER TABLE gallery_email_attempts ADD CONSTRAINT fk_gallery_attempt_project
+       FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL`
+    );
   }
   const [batchIndex] = await pool.execute(
     `SELECT 1 FROM information_schema.statistics

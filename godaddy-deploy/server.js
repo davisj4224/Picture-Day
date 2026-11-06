@@ -51,6 +51,11 @@ const {
   newProjectGalleryToken
 } = require('./lib/projects.js');
 const {
+  loadProjectEmailContext: getProjectEmailContext,
+  renderProjectEmail,
+  buildProjectExportCsv
+} = require('./lib/project-email.js');
+const {
   BRAND_UPLOAD_LIMIT_BYTES,
   createBrandUploadMiddleware,
   createPhotoUploadMiddleware,
@@ -1181,6 +1186,22 @@ app.get('/api/email/pending', requireStaff, ok(async (req, res) => {
 app.get('/api/email/export.csv', requireStaff, ok(async (req, res) => {
   const rows = await db.prepare('SELECT * FROM students ORDER BY last_name, first_name').all();
   const cfg = config();
+  const projectId = req.query.projectId === undefined ? null : Number(req.query.projectId);
+  if (projectId !== null && (!Number.isSafeInteger(projectId) || projectId < 1)) {
+    return res.status(400).json({ error: 'Invalid project ID.' });
+  }
+  if (projectId !== null) {
+    const project = await db.prepare('SELECT id, name, archived_at FROM projects WHERE id = ?').get(projectId);
+    if (!project) return res.status(404).json({ error: 'Project not found.' });
+    const projectRows = await db.prepare(
+      `SELECT student_id, gallery_token, expires_at, published_at
+       FROM project_students WHERE project_id = ?`
+    ).all(projectId);
+    const memberships = new Map(projectRows.map((row) => [Number(row.student_id), row]));
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="gallery-links.csv"');
+    return res.send(buildProjectExportCsv(rows, project, memberships, cfg.publicUrl));
+  }
   const esc = (v) => {
     const value = String(v ?? '');
     const safe = /^[\u0000-\u0020]*[=+\-@]/.test(value) ? `'${value}` : value;
@@ -1206,6 +1227,105 @@ app.get('/api/email/export.csv', requireStaff, ok(async (req, res) => {
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', 'attachment; filename="gallery-links.csv"');
   res.send(lines.join('\n'));
+}));
+
+app.get('/api/projects/:id/email/recipients', requireAdmin, ok(async (req, res) => {
+  const projectId = Number(req.params.id);
+  if (!Number.isSafeInteger(projectId) || projectId < 1) return res.status(400).json({ error: 'Invalid project ID.' });
+  const context = await getProjectEmailContext(db, projectId, config().publicUrl);
+  if (!context) return res.status(404).json({ error: 'Project not found.' });
+  res.json({
+    project: { id: context.project.id, name: context.project.name, archived: Boolean(context.project.archived_at) },
+    recipients: context.recipients.map((student) => ({
+      id: student.student_id,
+      firstName: student.first_name,
+      lastName: student.last_name,
+      parentEmail: student.parent_email
+    }))
+  });
+}));
+
+function selectedEmailIds(body) {
+  if (!Array.isArray(body?.ids)) return null;
+  const ids = body.ids.map(Number);
+  if (ids.some((id) => !Number.isSafeInteger(id) || id < 1)) return null;
+  return [...new Set(ids)];
+}
+
+app.post('/api/projects/:id/email/preview', requireAdmin, ok(async (req, res) => {
+  const projectId = Number(req.params.id);
+  if (!Number.isSafeInteger(projectId) || projectId < 1) return res.status(400).json({ error: 'Invalid project ID.' });
+  const ids = selectedEmailIds(req.body);
+  if (!ids?.length) return res.status(400).json({ error: 'Choose at least one recipient using valid student IDs.' });
+  const context = await getProjectEmailContext(db, projectId, config().publicUrl, Date.now(), ids);
+  if (!context) return res.status(404).json({ error: 'Project not found.' });
+  if (context.project.archived_at) return res.status(409).json({ error: 'Archived projects cannot be emailed.' });
+  if (context.invalidIds.length) {
+    return res.status(409).json({ error: 'Some selected students do not have an available published gallery for this project.' });
+  }
+  if (!context.recipients.length) return res.status(409).json({ error: 'No eligible recipients were selected.' });
+  const sample = context.recipients[0];
+  const rendered = renderProjectEmail(context.project, sample, config(), branding('published'), config().publicUrl);
+  res.json({
+    projectName: context.project.name,
+    recipientCount: context.recipients.length,
+    preview: {
+      student: `${sample.first_name} ${sample.last_name}`,
+      subject: rendered.subject,
+      text: rendered.text,
+      galleryLink: rendered.link
+    }
+  });
+}));
+
+app.post('/api/projects/:id/email/send', requireAdmin, ok(async (req, res) => {
+  const projectId = Number(req.params.id);
+  if (!Number.isSafeInteger(projectId) || projectId < 1) return res.status(400).json({ error: 'Invalid project ID.' });
+  const ids = selectedEmailIds(req.body);
+  if (!ids?.length) return res.status(400).json({ error: 'Choose at least one recipient using valid student IDs.' });
+  if (!mail.configured()) return res.status(400).json({ error: 'Email is not configured.' });
+  const context = await getProjectEmailContext(db, projectId, config().publicUrl, Date.now(), ids);
+  if (!context) return res.status(404).json({ error: 'Project not found.' });
+  if (context.project.archived_at) return res.status(409).json({ error: 'Archived projects cannot be emailed.' });
+  if (context.invalidIds.length) {
+    return res.status(409).json({ error: 'Some selected students do not have an available published gallery for this project.' });
+  }
+  if (!context.recipients.length) return res.status(409).json({ error: 'No eligible recipients were selected.' });
+
+  const cfg = config();
+  const palette = branding('published').palette;
+  const result = { attempted: 0, acceptedByGateway: 0, failed: 0, errors: [] };
+  for (const student of context.recipients) {
+    const attemptedAt = Date.now();
+    const attempt = await db.prepare(
+      `INSERT INTO gallery_email_attempts
+        (student_id, project_id, recipient_email, email_type, attempted_at, status)
+       VALUES (?, ?, ?, 'project-gallery', ?, 'pending')`
+    ).run(student.student_id, projectId, String(student.parent_email).trim(), attemptedAt);
+    result.attempted++;
+    try {
+      const rendered = renderProjectEmail(context.project, student, cfg, branding('published'), cfg.publicUrl);
+      await mail.send({
+        to: String(student.parent_email).trim(),
+        from: cfg.emailFrom,
+        replyTo: cfg.emailReplyTo,
+        subject: rendered.subject,
+        text: rendered.text,
+        link: rendered.link,
+        palette
+      });
+      await db.prepare('UPDATE gallery_email_attempts SET status = ? WHERE id = ?')
+        .run('accepted', attempt.lastInsertRowid);
+      result.acceptedByGateway++;
+    } catch (error) {
+      const message = String(error?.message || error).slice(0, 300);
+      await db.prepare('UPDATE gallery_email_attempts SET status = ?, error_message = ? WHERE id = ?')
+        .run('failed', message, attempt.lastInsertRowid);
+      result.failed++;
+      result.errors.push({ studentId: student.student_id, error: message });
+    }
+  }
+  res.json({ projectName: context.project.name, ...result });
 }));
 
 app.post(

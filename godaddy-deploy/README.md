@@ -18,6 +18,7 @@ two never touch.
 | `/admin` | Staff | Floor board, roster, cards, upload, review, galleries, email |
 | `/design` | Students | Colours, type, words, logo — draft only, staff publish |
 | `/g/<token>` | One family | Their photos, download, expires |
+| `/p/<token>` | One family | Their photos from one photo shoot project |
 
 ---
 
@@ -336,6 +337,12 @@ To send from the app, fill in the SMTP block in `.env`, restart, then use
 Email → Send test before touching real addresses. The subject and body accept
 `{{student}}`, `{{first}}`, `{{school}}`, `{{event}}`, `{{year}}`, `{{link}}`
 and `{{expires}}`.
+
+Administrators can also select an active photo project in Email to review its
+eligible recipients, preview a project-specific message and link, and explicitly
+send. Project exports retain the legacy columns and add the project name and
+that student's project gallery URL. Gateway acceptance is not confirmation of
+inbox delivery; publishing never sends email.
 
 ---
 
