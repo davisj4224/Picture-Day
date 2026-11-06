@@ -251,7 +251,7 @@ async function loadStats() {
     ['Need review', s.photos.unmatched, s.photos.unmatched ? 'flag' : ''],
     ['Galleries published', s.galleries.published, ''],
     ['Waiting to publish', s.galleries.awaiting, s.galleries.awaiting ? 'wait' : ''],
-    ['Emails sent', s.emails.sent, ''],
+    ['Accepted by email gateway', s.emails.sent, ''],
     ['Emails pending', s.emails.pending, s.emails.pending ? 'wait' : '']
   ]
     .map(([label, n, cls]) => `<div class="count ${cls}"><b class="num">${n}</b><span>${label}</span></div>`)
@@ -806,9 +806,16 @@ async function loadGalleryEmailHistory(id) {
   } else if (!history.hasValidRecipient) {
     summary.textContent = 'No valid recipient email is on file.';
     summary.classList.add('bad');
-  } else if (latest?.status === 'sent') {
+  } else if (latest?.outcome === 'rejected') {
+    summary.textContent = `Latest attempt: SMTP rejected the message${latest.diagnostic_json ? ` (${JSON.parse(latest.diagnostic_json).smtpCode || 'code unavailable'})` : ''}.`;
+    summary.classList.add('bad');
+  } else if (latest?.outcome === 'accepted' || latest?.status === 'sent') {
     summary.textContent = 'Latest attempt: GoDaddy accepted the message.';
     summary.classList.remove('bad');
+  } else if (latest?.outcome === 'unknown') {
+    const diagnostics = latest.diagnostic_json ? JSON.parse(latest.diagnostic_json) : null;
+    summary.textContent = `Latest attempt outcome is unknown${diagnostics?.unknownReason ? ` (${diagnostics.unknownReason})` : ''}.`;
+    summary.classList.add('bad');
   } else if (latest?.status === 'failed') {
     summary.textContent = `Latest attempt failed: ${latest.error_message || 'No failure reason was recorded.'}`;
     summary.classList.add('bad');
@@ -822,16 +829,28 @@ async function loadGalleryEmailHistory(id) {
 
   $('#galleryEmailAttempts').innerHTML = history.attempts.length
     ? history.attempts.map((attempt) => {
-        const status = attempt.status === 'sent'
-          ? 'GoDaddy accepted'
-          : attempt.status === 'failed'
-            ? 'Failed'
-            : 'Pending / unknown';
+        const diagnostics = attempt.diagnostic_json ? JSON.parse(attempt.diagnostic_json) : null;
+        const status = attempt.outcome === 'rejected'
+          ? 'SMTP rejected'
+          : attempt.outcome === 'unknown'
+            ? 'Outcome unknown'
+            : attempt.status === 'sent'
+              ? 'GoDaddy accepted'
+              : attempt.status === 'failed'
+                ? 'Failed'
+                : 'Pending / unknown';
+        const details = [
+          diagnostics?.smtpCode ? `SMTP ${diagnostics.smtpCode}` : '',
+          diagnostics?.smtpResponse || diagnostics?.gatewayMessage || attempt.error_message || '',
+          diagnostics?.errorCode || '',
+          diagnostics?.errorType || '',
+          diagnostics?.transportMessage || ''
+        ].filter(Boolean).join(' — ');
         return `<tr>
           <td>${esc(new Date(attempt.attempted_at).toLocaleString())}</td>
           <td>${esc(attempt.recipient_email)}</td>
           <td>${status}</td>
-          <td>${esc(attempt.error_message || '')}</td>
+          <td>${esc(details)}</td>
         </tr>`;
       }).join('')
     : '<tr><td colspan="4" class="hint">No attempts recorded.</td></tr>';
@@ -1011,7 +1030,8 @@ $('#sendEmails').addEventListener('click', async () => {
   if (!confirm(`Send gallery links to ${ids.length} families?`)) return;
   try {
     const r = await api('/api/email/send', { method: 'POST', body: { ids } });
-    toast(`${r.sent} sent${r.failed ? `, ${r.failed} failed` : ''}.`, r.failed ? 'bad' : 'good');
+    toast(`${r.sent} accepted by the email gateway${r.failed ? `, ${r.failed} failed` : ''}. Inbox delivery is not confirmed.`,
+      r.failed ? 'bad' : 'good');
     loadPending();
     loadStats();
   } catch (e) { toast(e.message, 'bad'); }
@@ -1048,9 +1068,11 @@ async function loadProjectEmailRecipients() {
     $('#projectEmailCount').textContent = '';
     $('#projectEmailStatus').textContent = '';
     $('#projectEmailExport').hidden = true;
+    $('#projectEmailHistory tbody').innerHTML = '<tr><td colspan="5" class="hint">Choose a project to view attempts.</td></tr>';
     return;
   }
   const result = await api(`/api/projects/${id}/email/recipients`);
+  const attempts = await api(`/api/projects/${id}/email/attempts`);
   const recipients = result.recipients;
   body.innerHTML = recipients.length
     ? recipients.map((student) => `<tr><td><input type="checkbox" data-project-email="${student.id}" checked style="width:auto"></td>
@@ -1060,6 +1082,32 @@ async function loadProjectEmailRecipients() {
   $('#projectEmailCount').textContent = `${recipients.length} eligible`;
   $('#projectEmailExport').href = `/api/email/export.csv?projectId=${encodeURIComponent(id)}`;
   $('#projectEmailExport').hidden = false;
+  $('#projectEmailHistory tbody').innerHTML = attempts.length
+    ? attempts.map((attempt) => {
+        const diagnostics = attempt.diagnostic_json ? JSON.parse(attempt.diagnostic_json) : null;
+        const recipient = diagnostics?.recipients?.[0];
+        const outcome = attempt.outcome || diagnostics?.outcome || 'unknown';
+        const label = outcome === 'accepted'
+          ? 'Accepted by gateway'
+          : outcome === 'rejected'
+            ? 'SMTP rejected'
+            : 'Outcome unknown';
+        const details = [
+          diagnostics?.smtpCode ? `SMTP ${diagnostics.smtpCode}` : '',
+          diagnostics?.smtpResponse || diagnostics?.gatewayMessage || attempt.error_message || '',
+          diagnostics?.errorCode || '',
+          diagnostics?.errorType || '',
+          diagnostics?.transportMessage || ''
+        ].filter(Boolean).join(' — ');
+        return `<tr>
+          <td>${esc(new Date(attempt.attempted_at).toLocaleString())}</td>
+          <td>${esc(attempt.last_name)}, ${esc(attempt.first_name)}</td>
+          <td>${esc(recipient?.recipient || '')}${recipient?.domain ? ` (${esc(recipient.domain)})` : ''}</td>
+          <td>${esc(label)}</td>
+          <td>${esc(details)}</td>
+        </tr>`;
+      }).join('')
+    : '<tr><td colspan="5" class="hint">No project email attempts recorded.</td></tr>';
   updateProjectEmailCount();
 }
 
@@ -1127,6 +1175,7 @@ $('#sendProjectEmails').addEventListener('click', async () => {
   } catch (error) {
     toast(error.message, 'bad');
     $('#sendProjectEmails').disabled = false;
+    await loadProjectEmailRecipients();
   }
 });
 

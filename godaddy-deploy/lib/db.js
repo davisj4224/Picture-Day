@@ -23,7 +23,7 @@ const REQUIRED_COLUMNS = {
   batches: ['id', 'name', 'project_id', 'created_at', 'sorted_at'],
   photos: ['id', 'batch_id', 'student_id', 'project_id', 'file', 'thumb', 'original', 'bytes', 'captured_at', 'seq_index', 'qr_value', 'is_marker', 'hidden', 'published', 'assigned_by', 'created_at'],
   email_log: ['id', 'student_id', 'to_email', 'status', 'detail', 'sent_at'],
-  gallery_email_attempts: ['id', 'student_id', 'project_id', 'recipient_email', 'email_type', 'attempted_at', 'status', 'error_message'],
+  gallery_email_attempts: ['id', 'student_id', 'project_id', 'recipient_email', 'email_type', 'attempted_at', 'status', 'error_message', 'outcome', 'diagnostic_json', 'message_id'],
   settings: ['key', 'value'],
   sessions: ['sid', 'sess', 'expires_at']
 };
@@ -240,6 +240,9 @@ async function initialize() {
       attempted_at BIGINT NOT NULL,
       status VARCHAR(32) NOT NULL,
       error_message VARCHAR(300) NULL,
+      outcome VARCHAR(32) NULL,
+      diagnostic_json LONGTEXT NULL,
+      message_id VARCHAR(255) NULL,
       KEY idx_gallery_email_attempts_student_time (student_id, attempted_at),
       KEY idx_gallery_attempts_project_student_time (project_id, student_id, attempted_at),
       CONSTRAINT fk_gallery_attempt_student FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
@@ -299,6 +302,20 @@ async function initialize() {
       `ALTER TABLE gallery_email_attempts ADD CONSTRAINT fk_gallery_attempt_project
        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL`
     );
+  }
+  for (const [column, definition] of [
+    ['outcome', 'VARCHAR(32) NULL'],
+    ['diagnostic_json', 'LONGTEXT NULL'],
+    ['message_id', 'VARCHAR(255) NULL']
+  ]) {
+    const [existing] = await pool.execute(
+      `SELECT 1 FROM information_schema.columns
+       WHERE table_schema = ? AND table_name = 'gallery_email_attempts' AND column_name = ?`,
+      [process.env.DB_NAME, column]
+    );
+    if (!existing.length) {
+      await pool.query(`ALTER TABLE gallery_email_attempts ADD COLUMN \`${column}\` ${definition}`);
+    }
   }
   const [batchIndex] = await pool.execute(
     `SELECT 1 FROM information_schema.statistics

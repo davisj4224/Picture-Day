@@ -1089,8 +1089,9 @@ async function sendGalleryEmail(studentId) {
      VALUES (?, ?, 'gallery', ?, 'pending')`
   ).run(student.id, recipient, attemptedAt);
 
+  let result;
   try {
-    await mail.send({
+    result = await mail.send({
       to: recipient,
       from: cfg.emailFrom,
       replyTo: cfg.emailReplyTo,
@@ -1101,14 +1102,32 @@ async function sendGalleryEmail(studentId) {
     });
   } catch (error) {
     const message = String(error?.message || error).slice(0, 300);
-    await db.prepare('UPDATE gallery_email_attempts SET status = ?, error_message = ? WHERE id = ?')
-      .run('failed', message, attempt.lastInsertRowid);
+    await db.prepare(
+      `UPDATE gallery_email_attempts
+       SET status = ?, error_message = ?, outcome = ?, diagnostic_json = ?
+       WHERE id = ?`
+    ).run(
+      'failed',
+      message,
+      error.diagnostics?.outcome || 'unknown',
+      error.diagnostics ? JSON.stringify(error.diagnostics) : null,
+      attempt.lastInsertRowid
+    );
     throw error;
   }
 
-  await db.prepare('UPDATE gallery_email_attempts SET status = ? WHERE id = ?')
-    .run('sent', attempt.lastInsertRowid);
-  return { attemptedAt, student };
+  await db.prepare(
+    `UPDATE gallery_email_attempts
+     SET status = ?, outcome = ?, diagnostic_json = ?, message_id = ?
+     WHERE id = ?`
+  ).run(
+    'sent',
+    result.outcome,
+    JSON.stringify(result.diagnostics),
+    result.messageId,
+    attempt.lastInsertRowid
+  );
+  return { attemptedAt, student, ...result };
 }
 
 app.get('/api/students/:id/email-history', requireStaff, ok(async (req, res) => {
@@ -1120,7 +1139,8 @@ app.get('/api/students/:id/email-history', requireStaff, ok(async (req, res) => 
   if (!student) return res.status(404).json({ error: 'No such student.' });
 
   const attempts = await db.prepare(
-    `SELECT id, recipient_email, email_type, attempted_at, status, error_message
+    `SELECT id, recipient_email, email_type, attempted_at, status, error_message,
+       outcome, diagnostic_json, message_id
      FROM gallery_email_attempts
      WHERE student_id = ? AND email_type = 'gallery'
      ORDER BY attempted_at DESC, id DESC LIMIT 10`
@@ -1166,8 +1186,8 @@ app.post(
       return res.status(502).json({ status: 'failed', error: String(error.message || error).slice(0, 300) });
     }
 
-    await db.prepare('INSERT INTO email_log (student_id, to_email, status, sent_at) VALUES (?,?,?,?)')
-      .run(student.id, result.student.parent_email, 'sent', Date.now());
+    await db.prepare('INSERT INTO email_log (student_id, to_email, status, detail, sent_at) VALUES (?,?,?,?,?)')
+      .run(student.id, result.student.parent_email, 'sent', mail.diagnosticSummary(result.diagnostics), Date.now());
     return res.json({ status: 'sent', acceptedByGateway: true, attemptedAt: result.attemptedAt });
   })
 );
@@ -1245,6 +1265,22 @@ app.get('/api/projects/:id/email/recipients', requireAdmin, ok(async (req, res) 
   });
 }));
 
+app.get('/api/projects/:id/email/attempts', requireAdmin, ok(async (req, res) => {
+  const projectId = Number(req.params.id);
+  if (!Number.isSafeInteger(projectId) || projectId < 1) return res.status(400).json({ error: 'Invalid project ID.' });
+  const project = await db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId);
+  if (!project) return res.status(404).json({ error: 'Project not found.' });
+  const attempts = await db.prepare(
+    `SELECT a.id, a.student_id, a.attempted_at, a.status, a.error_message,
+       a.outcome, a.diagnostic_json, a.message_id, s.first_name, s.last_name
+     FROM gallery_email_attempts a
+     JOIN students s ON s.id = a.student_id
+     WHERE a.project_id = ? AND a.email_type = 'project-gallery'
+     ORDER BY a.attempted_at DESC, a.id DESC LIMIT 25`
+  ).all(projectId);
+  res.json(attempts);
+}));
+
 function selectedEmailIds(body) {
   if (!Array.isArray(body?.ids)) return null;
   const ids = body.ids.map(Number);
@@ -1305,7 +1341,7 @@ app.post('/api/projects/:id/email/send', requireAdmin, ok(async (req, res) => {
     result.attempted++;
     try {
       const rendered = renderProjectEmail(context.project, student, cfg, branding('published'), cfg.publicUrl);
-      await mail.send({
+      const delivery = await mail.send({
         to: String(student.parent_email).trim(),
         from: cfg.emailFrom,
         replyTo: cfg.emailReplyTo,
@@ -1314,15 +1350,32 @@ app.post('/api/projects/:id/email/send', requireAdmin, ok(async (req, res) => {
         link: rendered.link,
         palette
       });
-      await db.prepare('UPDATE gallery_email_attempts SET status = ? WHERE id = ?')
-        .run('accepted', attempt.lastInsertRowid);
+      await db.prepare(
+        `UPDATE gallery_email_attempts
+         SET status = ?, outcome = ?, diagnostic_json = ?, message_id = ?
+         WHERE id = ?`
+      ).run('accepted', delivery.outcome, JSON.stringify(delivery.diagnostics), delivery.messageId, attempt.lastInsertRowid);
       result.acceptedByGateway++;
     } catch (error) {
       const message = String(error?.message || error).slice(0, 300);
-      await db.prepare('UPDATE gallery_email_attempts SET status = ?, error_message = ? WHERE id = ?')
-        .run('failed', message, attempt.lastInsertRowid);
+      await db.prepare(
+        `UPDATE gallery_email_attempts
+         SET status = ?, error_message = ?, outcome = ?, diagnostic_json = ?
+         WHERE id = ?`
+      ).run(
+        'failed',
+        message,
+        error.diagnostics?.outcome || 'unknown',
+        error.diagnostics ? JSON.stringify(error.diagnostics) : null,
+        attempt.lastInsertRowid
+      );
       result.failed++;
-      result.errors.push({ studentId: student.student_id, error: message });
+      result.errors.push({
+        studentId: student.student_id,
+        error: message,
+        outcome: error.diagnostics?.outcome || 'unknown',
+        diagnostics: error.diagnostics || null
+      });
     }
   }
   res.json({ projectName: context.project.name, ...result });
@@ -1353,8 +1406,12 @@ app.post(
       }
       try {
         const result = await sendGalleryEmail(id);
-        await db.prepare('INSERT INTO email_log (student_id, to_email, status, sent_at) VALUES (?,?,?,?)').run(
-          result.student.id, result.student.parent_email, 'sent', Date.now()
+        await db.prepare('INSERT INTO email_log (student_id, to_email, status, detail, sent_at) VALUES (?,?,?,?,?)').run(
+          result.student.id,
+          result.student.parent_email,
+          'sent',
+          mail.diagnosticSummary(result.diagnostics),
+          Date.now()
         );
         out.sent++;
       } catch (e) {
