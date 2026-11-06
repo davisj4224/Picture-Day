@@ -86,17 +86,18 @@ test('unpublished, expired, malformed-token, and archived galleries are unavaila
     student(1, 8, 'A'.repeat(32), { published_at: null }),
     student(2, 8, 'B'.repeat(32), { expires_at: Date.now() - 1 }),
     student(3, 8, 'invalid-token'),
-    student(4, 8, projectToken)
+    student(4, 8, projectToken),
+    student(5, 8, otherProjectToken, { republish_required: 1 })
   ];
   const active = resolveProjectEmailRecipients(
     { id: 8, name: 'Winter Pictures', archived_at: null },
     rows,
     publicUrl,
     Date.now(),
-    [1, 2, 3]
+    [1, 2, 3, 5]
   );
   assert.deepEqual(active.recipients, []);
-  assert.deepEqual(active.invalidIds, [1, 2, 3]);
+  assert.deepEqual(active.invalidIds, [1, 2, 3, 5]);
 
   const archived = resolveProjectEmailRecipients(
     { id: 8, name: 'Winter Pictures', archived_at: Date.now() },
@@ -117,11 +118,14 @@ test('project export preserves legacy columns and only emits the selected valid 
     { id: 13, first_name: 'First13', last_name: 'Last13', grade: '5', teacher: 'Kim',
       parent_email: 'parent13@example.test', gallery_token: null, published_at: null, expires_at: null },
     { id: 14, first_name: 'First14', last_name: 'Last14', grade: '6', teacher: 'Ray',
-      parent_email: 'parent14@example.test', gallery_token: null, published_at: null, expires_at: null }
+      parent_email: 'parent14@example.test', gallery_token: null, published_at: null, expires_at: null },
+    { id: 15, first_name: 'First15', last_name: 'Last15', grade: '3', teacher: 'Park',
+      parent_email: 'parent15@example.test', gallery_token: null, published_at: null, expires_at: null }
   ];
   const memberships = new Map([
     [12, student(12, 8, projectToken)],
-    [14, student(14, 8, 'bad-token')]
+    [14, student(14, 8, 'bad-token')],
+    [15, student(15, 8, otherProjectToken, { republish_required: 1 })]
   ]);
 
   const csv = buildProjectExportCsv(students, project, memberships, publicUrl, Date.now());
@@ -132,6 +136,7 @@ test('project export preserves legacy columns and only emits the selected valid 
   assert.ok(lines[1].includes(`"${publicUrl}/p/${projectToken}"`));
   assert.ok(lines[2].includes('""'));
   assert.ok(lines[3].endsWith('""'));
+  assert.ok(lines[4].endsWith('""'), 'republish-required memberships must not export a public link');
 
   const archivedCsv = buildProjectExportCsv(
     students.slice(0, 1),

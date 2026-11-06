@@ -69,40 +69,50 @@ function resolveProjectQr(normalizedCode, projectCodes, studentCodes) {
 }
 
 async function publishProjectStudent(db, projectId, studentId, galleryDays, newGalleryToken) {
-  const ensured = await ensureProjectStudent(db, projectId, studentId);
-  if (ensured.status !== 'ready') return ensured;
-  const row = await db.prepare(
-    'SELECT gallery_token FROM project_students WHERE project_id = ? AND student_id = ?'
-  ).get(projectId, studentId);
-  const reused = validProjectGalleryToken(row.gallery_token);
-  const token = reused ? row.gallery_token : newGalleryToken();
-  if (!validProjectGalleryToken(token)) throw new Error('Could not generate a valid project gallery token.');
-  const publishedAt = Date.now();
-  const expiresAt = publishedAt + Number(galleryDays) * 24 * 60 * 60 * 1000;
-  if (!Number.isFinite(expiresAt) || expiresAt <= publishedAt) {
-    throw new Error('Project gallery expiration could not be calculated.');
-  }
+  return db.transaction(async (tx) => {
+    const project = await tx.prepare(
+      'SELECT id, archived_at FROM projects WHERE id = ? FOR UPDATE'
+    ).get(projectId);
+    if (!project) return { status: 'not-found' };
+    if (project.archived_at) return { status: 'archived' };
 
-  await db.prepare(
-    `UPDATE project_students SET gallery_token = ?, expires_at = ?, published_at = ?
-     WHERE project_id = ? AND student_id = ?`
-  ).run(token, expiresAt, publishedAt, projectId, studentId);
-  const persisted = await db.prepare(
-    `SELECT gallery_token, expires_at, published_at FROM project_students
-     WHERE project_id = ? AND student_id = ?`
-  ).get(projectId, studentId);
-  if (
-    persisted?.gallery_token !== token ||
-    Number(persisted.published_at) !== publishedAt ||
-    Number(persisted.expires_at) !== expiresAt
-  ) {
-    throw new Error('Project gallery publication was not persisted.');
-  }
-  await db.prepare(
-    `UPDATE photos SET published = 1
-     WHERE project_id = ? AND student_id = ? AND is_marker = 0 AND hidden = 0`
-  ).run(projectId, studentId);
-  return { status: 'published', ...persisted, token, reused };
+    const ensured = await ensureProjectStudent(tx, projectId, studentId);
+    if (ensured.status !== 'ready') return ensured;
+    const row = await tx.prepare(
+      'SELECT gallery_token FROM project_students WHERE project_id = ? AND student_id = ?'
+    ).get(projectId, studentId);
+    const reused = validProjectGalleryToken(row.gallery_token);
+    const token = reused ? row.gallery_token : newGalleryToken();
+    if (!validProjectGalleryToken(token)) throw new Error('Could not generate a valid project gallery token.');
+    const publishedAt = Date.now();
+    const expiresAt = publishedAt + Number(galleryDays) * 24 * 60 * 60 * 1000;
+    if (!Number.isFinite(expiresAt) || expiresAt <= publishedAt) {
+      throw new Error('Project gallery expiration could not be calculated.');
+    }
+
+    await tx.prepare(
+      `UPDATE project_students
+       SET gallery_token = ?, expires_at = ?, published_at = ?, republish_required = 0
+       WHERE project_id = ? AND student_id = ?`
+    ).run(token, expiresAt, publishedAt, projectId, studentId);
+    const persisted = await tx.prepare(
+      `SELECT gallery_token, expires_at, published_at, republish_required FROM project_students
+       WHERE project_id = ? AND student_id = ?`
+    ).get(projectId, studentId);
+    if (
+      persisted?.gallery_token !== token ||
+      Number(persisted.published_at) !== publishedAt ||
+      Number(persisted.expires_at) !== expiresAt ||
+      Number(persisted.republish_required) !== 0
+    ) {
+      throw new Error('Project gallery publication was not persisted.');
+    }
+    await tx.prepare(
+      `UPDATE photos SET published = 1
+       WHERE project_id = ? AND student_id = ? AND is_marker = 0 AND hidden = 0`
+    ).run(projectId, studentId);
+    return { status: 'published', ...persisted, token, reused };
+  });
 }
 
 async function unpublishProjectStudent(db, projectId, studentId) {
@@ -114,16 +124,46 @@ async function unpublishProjectStudent(db, projectId, studentId) {
   ).run(projectId, studentId);
 }
 
+async function archiveProject(db, projectId, archivedAt = Date.now()) {
+  return db.transaction(async (tx) => {
+    const project = await tx.prepare(
+      'SELECT id FROM projects WHERE id = ? FOR UPDATE'
+    ).get(projectId);
+    if (!project) return { status: 'not-found' };
+    await tx.prepare(
+      'UPDATE projects SET archived_at = COALESCE(archived_at, ?) WHERE id = ?'
+    ).run(archivedAt, projectId);
+    await tx.prepare(
+      'UPDATE project_students SET republish_required = 1 WHERE project_id = ?'
+    ).run(projectId);
+    return { status: 'archived' };
+  });
+}
+
+async function unarchiveProject(db, projectId) {
+  return db.transaction(async (tx) => {
+    const project = await tx.prepare(
+      'SELECT id FROM projects WHERE id = ? FOR UPDATE'
+    ).get(projectId);
+    if (!project) return { status: 'not-found' };
+    await tx.prepare('UPDATE projects SET archived_at = NULL WHERE id = ?').run(projectId);
+    return { status: 'unarchived' };
+  });
+}
+
 async function projectGalleryStudentByToken(db, token, now = Date.now()) {
   const row = await db.prepare(
     `SELECT ps.project_id, ps.student_id, ps.gallery_token, ps.expires_at, ps.published_at,
+       ps.republish_required,
        p.name AS project_name, p.archived_at, s.first_name, s.last_name, s.grade, s.teacher
      FROM project_students ps
      JOIN projects p ON p.id = ps.project_id
      JOIN students s ON s.id = ps.student_id
      WHERE ps.gallery_token = ?`
   ).get(token);
-  if (!row || !row.published_at) return { student: null, status: 'not-found' };
+  if (!row || !row.published_at || row.archived_at || row.republish_required) {
+    return { student: null, status: 'not-found' };
+  }
   if (row.expires_at && Number(row.expires_at) < now) return { student: null, status: 'expired' };
   return { student: row, status: 'published' };
 }
@@ -144,6 +184,8 @@ module.exports = {
   ensureProjectStudent,
   projectStudentQrCode,
   resolveProjectQr,
+  archiveProject,
+  unarchiveProject,
   publishProjectStudent,
   unpublishProjectStudent,
   projectGalleryStudentByToken,

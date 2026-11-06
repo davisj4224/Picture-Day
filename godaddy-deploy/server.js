@@ -44,6 +44,8 @@ const {
 const {
   projectStudentQrCode,
   resolveProjectQr,
+  archiveProject,
+  unarchiveProject,
   publishProjectStudent,
   unpublishProjectStudent,
   projectGalleryStudentByToken,
@@ -1214,7 +1216,7 @@ app.get('/api/email/export.csv', requireStaff, ok(async (req, res) => {
     const project = await db.prepare('SELECT id, name, archived_at FROM projects WHERE id = ?').get(projectId);
     if (!project) return res.status(404).json({ error: 'Project not found.' });
     const projectRows = await db.prepare(
-      `SELECT student_id, gallery_token, expires_at, published_at
+      `SELECT student_id, gallery_token, expires_at, published_at, republish_required
        FROM project_students WHERE project_id = ?`
     ).all(projectId);
     const memberships = new Map(projectRows.map((row) => [Number(row.student_id), row]));
@@ -1682,9 +1684,16 @@ app.post('/api/projects', requireAdmin, ok(async (req, res) => {
 app.post('/api/projects/:id/archive', requireAdmin, ok(async (req, res) => {
   const projectId = Number(req.params.id);
   if (!Number.isSafeInteger(projectId) || projectId < 1) return res.status(400).json({ error: 'Invalid project ID.' });
-  const project = await db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId);
-  if (!project) return res.status(404).json({ error: 'Project not found.' });
-  await db.prepare('UPDATE projects SET archived_at = COALESCE(archived_at, ?) WHERE id = ?').run(Date.now(), projectId);
+  const result = await archiveProject(db, projectId);
+  if (result.status === 'not-found') return res.status(404).json({ error: 'Project not found.' });
+  res.json(await db.prepare('SELECT id, name, created_at, archived_at FROM projects WHERE id = ?').get(projectId));
+}));
+
+app.post('/api/projects/:id/unarchive', requireAdmin, ok(async (req, res) => {
+  const projectId = Number(req.params.id);
+  if (!Number.isSafeInteger(projectId) || projectId < 1) return res.status(400).json({ error: 'Invalid project ID.' });
+  const result = await unarchiveProject(db, projectId);
+  if (result.status === 'not-found') return res.status(404).json({ error: 'Project not found.' });
   res.json(await db.prepare('SELECT id, name, created_at, archived_at FROM projects WHERE id = ?').get(projectId));
 }));
 
@@ -1694,7 +1703,7 @@ app.get('/api/projects/:id/students', requireStaff, ok(async (req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found.' });
   const rows = await db.prepare(
     `SELECT s.id, s.first_name, s.last_name, s.grade, s.teacher, s.active,
-       ps.qr_code, ps.gallery_token, ps.expires_at, ps.published_at,
+       ps.qr_code, ps.gallery_token, ps.expires_at, ps.published_at, ps.republish_required,
        (SELECT COUNT(*) FROM photos ph
         WHERE ph.project_id = ? AND ph.student_id = s.id AND ph.is_marker = 0 AND ph.hidden = 0) AS photo_count
      FROM students s
@@ -1712,6 +1721,7 @@ app.get('/api/projects/:id/students', requireStaff, ok(async (req, res) => {
     galleryToken: s.gallery_token,
     expiresAt: s.expires_at,
     publishedAt: s.published_at,
+    republishRequired: Boolean(s.republish_required),
     photoCount: Number(s.photo_count || 0)
   })));
 }));

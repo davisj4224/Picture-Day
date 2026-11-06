@@ -72,7 +72,7 @@ function renderProjectContext() {
   const status = !project
     ? 'No project selected. Uploading is disabled.'
     : project.archived_at
-      ? `${project.name} is archived. Its galleries remain available, but uploads and new publishing are disabled.`
+      ? `${project.name} is archived. Public galleries are inaccessible; unarchive and explicitly republish to restore access.`
       : `Selected project: ${project.name}`;
   $('#activeProjectStatus').textContent = status;
   $('#uploadProjectStatus').textContent = status;
@@ -108,6 +108,8 @@ async function loadProjects() {
           <button class="ghost small" data-select-project="${project.id}">Select</button>
           ${me.user.role === 'admin' && !project.archived_at
             ? `<button class="ghost small danger" data-archive-project="${project.id}">Archive</button>`
+            : me.user.role === 'admin'
+              ? `<button class="ghost small" data-unarchive-project="${project.id}">Unarchive</button>`
             : ''}
         </td>
       </tr>`).join('')
@@ -150,13 +152,19 @@ $('#projectTable').addEventListener('click', async (event) => {
     return;
   }
   const archiveButton = event.target.closest('button[data-archive-project]');
-  if (!archiveButton) return;
-  const project = state.projects.find((item) => item.id === Number(archiveButton.dataset.archiveProject));
-  if (!project || !confirm(`Archive “${project.name}”? Its photos and published links will be retained, but uploads and new publishing will stop.`)) return;
+  const unarchiveButton = event.target.closest('button[data-unarchive-project]');
+  const projectId = Number(archiveButton?.dataset.archiveProject || unarchiveButton?.dataset.unarchiveProject);
+  if (!projectId) return;
+  const project = state.projects.find((item) => item.id === projectId);
+  if (!project) return;
+  if (archiveButton && !confirm(`Archive “${project.name}”? Public galleries will close until you unarchive and explicitly republish them. Project records and links are retained.`)) return;
+  if (unarchiveButton && !confirm(`Unarchive “${project.name}”? Public galleries will remain inaccessible until explicitly republished.`)) return;
   try {
-    await api(`/api/projects/${project.id}/archive`, { method: 'POST' });
+    await api(`/api/projects/${project.id}/${archiveButton ? 'archive' : 'unarchive'}`, { method: 'POST' });
     await loadProjects();
-    toast(`${project.name} archived.`, 'good');
+    toast(archiveButton
+      ? `${project.name} archived. Public galleries are inaccessible.`
+      : `${project.name} unarchived. Explicitly republish galleries to restore access.`, 'good');
   } catch (error) {
     toast(error.message, 'bad');
   }
@@ -201,7 +209,9 @@ async function openProjectGallery(studentId) {
   if (Number($('#projectGalleryStudent').value) !== Number(studentId) || state.activeProject?.id !== project.id) return;
   const shots = photos.filter((photo) => !photo.isMarker);
   const gallery = state.gallery;
-  $('#galleryStatus').textContent = gallery.publishedAt
+  $('#galleryStatus').textContent = gallery.republishRequired
+    ? 'Previously published; project access is closed. Explicitly republish to restore this gallery.'
+    : gallery.publishedAt
     ? `Published ${fmtDate(gallery.publishedAt)} · link open until ${fmtDate(gallery.expiresAt)}`
     : `${shots.length} photo${shots.length === 1 ? '' : 's'}, not published`;
   $('#galleryStrip').innerHTML = shots.length
@@ -216,8 +226,10 @@ async function openProjectGallery(studentId) {
     : '<p class="hint">No photos for this student in this project yet.</p>';
   $('#galleryActions').hidden = false;
   $('#publishOne').hidden = Boolean(project.archived_at);
-  $('#unpublishOne').hidden = !gallery.publishedAt;
-  const link = gallery.publishedAt ? projectGalleryUrl(gallery.galleryToken) : '';
+  $('#unpublishOne').hidden = !gallery.publishedAt || gallery.republishRequired || Boolean(project.archived_at);
+  const link = gallery.publishedAt && !gallery.republishRequired && !project.archived_at
+    ? projectGalleryUrl(gallery.galleryToken)
+    : '';
   $('#openLink').hidden = !link;
   $('#openLink').href = link;
   $('#galleryEmailHistory').hidden = true;

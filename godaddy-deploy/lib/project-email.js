@@ -23,6 +23,7 @@ function resolveProjectEmailRecipients(project, rows, publicUrl, now = Date.now(
     if (requested && !requested.has(Number(row.student_id))) continue;
     const expiresAt = row.expires_at == null ? null : Number(row.expires_at);
     const available = project && !project.archived_at &&
+      !row.republish_required &&
       row.published_at != null && Number(row.published_at) > 0 &&
       validProjectGalleryToken(row.gallery_token) &&
       (expiresAt === null || expiresAt >= now);
@@ -53,6 +54,7 @@ async function loadProjectEmailContext(db, projectId, publicUrl, now = Date.now(
   if (!project) return null;
   const rows = await db.prepare(
     `SELECT ps.student_id, ps.gallery_token, ps.expires_at, ps.published_at,
+       ps.republish_required,
        s.first_name, s.last_name, s.parent_email
      FROM project_students ps
      JOIN students s ON s.id = ps.student_id
@@ -103,6 +105,7 @@ function buildProjectExportCsv(students, project, memberships, publicUrl, now = 
   for (const student of students) {
     const membership = memberships.get(Number(student.id));
     const available = project && !project.archived_at && membership &&
+      !membership.republish_required &&
       membership.published_at != null && Number(membership.published_at) > 0 &&
       validProjectGalleryToken(membership.gallery_token) &&
       (membership.expires_at == null || Number(membership.expires_at) >= now);

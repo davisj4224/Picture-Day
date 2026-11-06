@@ -19,7 +19,7 @@ const REQUIRED_COLUMNS = {
   users: ['id', 'username', 'password', 'role', 'must_change_password', 'created_at'],
   students: ['id', 'ext_id', 'first_name', 'last_name', 'grade', 'teacher', 'parent_email', 'parent_name', 'qr_code', 'gallery_token', 'expires_at', 'published_at', 'notes', 'active', 'created_at'],
   projects: ['id', 'name', 'created_at', 'archived_at'],
-  project_students: ['project_id', 'student_id', 'qr_code', 'gallery_token', 'expires_at', 'published_at'],
+  project_students: ['project_id', 'student_id', 'qr_code', 'gallery_token', 'expires_at', 'published_at', 'republish_required'],
   batches: ['id', 'name', 'project_id', 'created_at', 'sorted_at'],
   photos: ['id', 'batch_id', 'student_id', 'project_id', 'file', 'thumb', 'original', 'bytes', 'captured_at', 'seq_index', 'qr_value', 'is_marker', 'hidden', 'published', 'assigned_by', 'created_at'],
   email_log: ['id', 'student_id', 'to_email', 'status', 'detail', 'sent_at'],
@@ -182,6 +182,7 @@ async function initialize() {
       gallery_token VARCHAR(128) NULL UNIQUE,
       expires_at BIGINT NULL,
       published_at BIGINT NULL,
+      republish_required TINYINT NOT NULL DEFAULT 0,
       PRIMARY KEY (project_id, student_id),
       KEY idx_project_students_student (student_id),
       KEY idx_project_students_project_published (project_id, published_at),
@@ -317,6 +318,22 @@ async function initialize() {
       await pool.query(`ALTER TABLE gallery_email_attempts ADD COLUMN \`${column}\` ${definition}`);
     }
   }
+  const [republishRequiredColumn] = await pool.execute(
+    `SELECT 1 FROM information_schema.columns
+     WHERE table_schema = ? AND table_name = 'project_students' AND column_name = 'republish_required'`,
+    [process.env.DB_NAME]
+  );
+  if (!republishRequiredColumn.length) {
+    await pool.query(
+      'ALTER TABLE project_students ADD COLUMN republish_required TINYINT NOT NULL DEFAULT 0'
+    );
+  }
+  await pool.query(
+    `UPDATE project_students ps
+     JOIN projects p ON p.id = ps.project_id
+     SET ps.republish_required = 1
+     WHERE p.archived_at IS NOT NULL AND ps.republish_required = 0`
+  );
   const [batchIndex] = await pool.execute(
     `SELECT 1 FROM information_schema.statistics
      WHERE table_schema = ? AND table_name = 'batches' AND index_name = 'idx_batches_project'`,
