@@ -1,11 +1,14 @@
 import { $, $$, api, session, toast, esc, fmtDate } from '/assets/common.js';
 import { scan, ready as readerReady } from '/assets/qr-scan.js';
 
+const LEGACY_GALLERY_NAME = 'Original Picture Day (Existing Photos)';
+
 const state = {
   students: [],
   projects: [],
   projectStudents: [],
   activeProject: null,
+  legacyGalleryMode: false,
   stats: null,
   config: {},
   branding: null,
@@ -69,13 +72,18 @@ function isProjectWritable(project = state.activeProject) {
 
 function renderProjectContext() {
   const project = state.activeProject;
-  const status = !project
-    ? 'No project selected. Uploading is disabled.'
+  const status = state.legacyGalleryMode
+    ? `${LEGACY_GALLERY_NAME} is selected. Select a photo-shoot project before uploading.`
+    : !project
+      ? 'No photo collection selected. Uploading is disabled.'
     : project.archived_at
       ? `${project.name} is archived. Public galleries are inaccessible; unarchive and explicitly republish to restore access.`
       : `Selected project: ${project.name}`;
+  const collectionName = project?.name ||
+    (state.legacyGalleryMode ? LEGACY_GALLERY_NAME : 'No photo collection selected');
   $('#activeProjectStatus').textContent = status;
   $('#uploadProjectStatus').textContent = status;
+  $('#reviewProjectName').textContent = collectionName;
   $('#files').disabled = !isProjectWritable();
   $('#startUpload').disabled = busy || queuedFiles.length === 0 || !isProjectWritable();
   $('#printProjectCards').disabled = !isProjectWritable();
@@ -88,18 +96,30 @@ function renderProjectContext() {
 }
 
 async function loadProjects() {
-  const previous = state.activeProject?.id || Number(localStorage.getItem('pictureday.activeProject')) || null;
+  const previous = localStorage.getItem('pictureday.activeProject') ||
+    (state.activeProject ? String(state.activeProject.id) : 'legacy');
   state.projects = await api('/api/projects');
-  const select = $('#activeProject');
-  select.innerHTML = '<option value="">Choose a project…</option>' +
+  const options = '<option value="">Choose a photo collection…</option>' +
+    `<option value="legacy">${LEGACY_GALLERY_NAME}</option>` +
     state.projects.map((project) =>
       `<option value="${project.id}">${esc(project.name)}${project.archived_at ? ' — archived' : ''}</option>`
     ).join('');
-  state.activeProject = state.projects.find((project) => project.id === previous) || null;
-  select.value = state.activeProject ? String(state.activeProject.id) : '';
-  if (state.activeProject) localStorage.setItem('pictureday.activeProject', String(state.activeProject.id));
-  else localStorage.removeItem('pictureday.activeProject');
-  $('#projectTable tbody').innerHTML = state.projects.length
+  const selectValue = previous === 'legacy' || !state.projects.some((project) => String(project.id) === previous)
+    ? 'legacy'
+    : previous;
+  state.activeProject = state.projects.find((project) => String(project.id) === selectValue) || null;
+  state.legacyGalleryMode = selectValue === 'legacy';
+  for (const select of [$('#activeProject'), $('#galleryProject')]) {
+    select.innerHTML = options;
+    select.value = selectValue;
+  }
+  localStorage.setItem('pictureday.activeProject', selectValue);
+  $('#projectTable tbody').innerHTML = `<tr>
+        <td><b>${LEGACY_GALLERY_NAME}</b></td>
+        <td>Existing photos</td>
+        <td><span class="pill live">Available</span></td>
+        <td style="white-space:nowrap"><button class="ghost small" data-select-project="legacy">Select</button></td>
+      </tr>` + (state.projects.length
     ? state.projects.map((project) => `<tr>
         <td><b>${esc(project.name)}</b></td>
         <td>${fmtDate(project.created_at)}</td>
@@ -113,23 +133,29 @@ async function loadProjects() {
             : ''}
         </td>
       </tr>`).join('')
-    : '<tr><td colspan="4" class="hint">No photo projects yet.</td></tr>';
+    : '');
   renderProjectContext();
   await loadProjectStudents();
 }
 
 async function selectProject(id) {
-  state.activeProject = state.projects.find((project) => project.id === Number(id)) || null;
-  if (state.activeProject) localStorage.setItem('pictureday.activeProject', String(state.activeProject.id));
+  state.activeProject = id && id !== 'legacy'
+    ? state.projects.find((project) => project.id === Number(id)) || null
+    : null;
+  state.legacyGalleryMode = id === 'legacy';
+  if (state.activeProject || state.legacyGalleryMode) localStorage.setItem('pictureday.activeProject', state.legacyGalleryMode ? 'legacy' : String(state.activeProject.id));
   else localStorage.removeItem('pictureday.activeProject');
-  $('#activeProject').value = state.activeProject ? String(state.activeProject.id) : '';
-  state.gallery = null;
+  $('#activeProject').value = state.legacyGalleryMode ? 'legacy' : state.activeProject ? String(state.activeProject.id) : '';
+  $('#galleryProject').value = $('#activeProject').value;
+  clearGallery();
   renderProjectContext();
   await loadProjectStudents();
   await Promise.all([loadBatches(), loadReview()]);
 }
 
-$('#activeProject').addEventListener('change', () => selectProject($('#activeProject').value));
+for (const selector of [$('#activeProject'), $('#galleryProject')]) {
+  selector.addEventListener('change', () => selectProject(selector.value));
+}
 
 $('#createProject').addEventListener('click', async () => {
   const name = $('#newProjectName').value.trim();
@@ -174,9 +200,17 @@ async function loadProjectStudents() {
   const project = state.activeProject;
   state.projectStudents = project ? await api(`/api/projects/${project.id}/students`) : [];
   if (!project) {
-    clearGallery();
-    const legacyStudentId = $('#galleryStudent').value;
+    const select = $('#galleryStudent');
+    const keep = select.value;
+    const legacyStudents = state.students.filter((student) => Number(student.photoCount) > 0);
+    select.innerHTML = '<option value="">Choose a student…</option>' +
+      legacyStudents.map((student) =>
+        `<option value="${student.id}">${esc(student.lastName)}, ${esc(student.firstName)}${student.grade ? ` (${esc(student.grade)})` : ''}</option>`
+      ).join('');
+    select.value = legacyStudents.some((student) => String(student.id) === keep) ? keep : '';
+    const legacyStudentId = select.value;
     if (legacyStudentId) await openGallery(legacyStudentId);
+    else clearGallery();
     return;
   }
   const select = $('#projectGalleryStudent');
@@ -194,6 +228,9 @@ $('#projectGalleryStudent').addEventListener('change', () => openProjectGallery(
 
 function clearGallery() {
   state.gallery = null;
+  $('#galleryProjectName').hidden = true;
+  $('#galleryProjectName').textContent = '';
+  $('#galleryStatus').textContent = '';
   $('#galleryStrip').innerHTML = '';
   $('#galleryActions').hidden = true;
   $('#galleryEmailHistory').hidden = true;
@@ -205,6 +242,8 @@ async function openProjectGallery(studentId) {
   const project = state.activeProject;
   const student = state.projectStudents.find((item) => item.id === Number(studentId));
   state.gallery = student ? { ...student, projectId: project.id, projectName: project.name } : null;
+  $('#galleryProjectName').textContent = project.name;
+  $('#galleryProjectName').hidden = false;
   const photos = await api(`/api/projects/${project.id}/students/${studentId}/photos`);
   if (Number($('#projectGalleryStudent').value) !== Number(studentId) || state.activeProject?.id !== project.id) return;
   const shots = photos.filter((photo) => !photo.isMarker);
@@ -319,6 +358,7 @@ async function loadStudents() {
       grades.map((g) => `<option>${esc(g)}</option>`).join('');
     sel.value = keep;
   }
+  if (!state.activeProject) await loadProjectStudents();
 }
 
 function matches(s, q) {
@@ -750,6 +790,8 @@ async function openGallery(id) {
   $('#resendGalleryEmail').hidden = false;
   const s = state.students.find((x) => x.id === Number(id));
   state.gallery = s;
+  $('#galleryProjectName').textContent = LEGACY_GALLERY_NAME;
+  $('#galleryProjectName').hidden = false;
   $('#resendGalleryEmail').disabled = true;
   const photos = await api(`/api/students/${id}/photos`);
   if (Number($('#galleryStudent').value) !== Number(id)) return;
@@ -1273,8 +1315,8 @@ document.addEventListener('keydown', (e) => e.key === 'Escape' && lightbox.class
 
 /* ----------------------------------------------------------------- go */
 
-await loadProjects();
 await loadStudents();
+await loadProjects();
 await loadStats();
 fillConfig(state.config);
 show(location.hash.slice(1) || 'floor');

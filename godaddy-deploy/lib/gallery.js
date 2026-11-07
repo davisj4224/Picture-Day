@@ -1,5 +1,7 @@
 'use strict';
 
+const LEGACY_GALLERY_NAME = 'Original Picture Day (Existing Photos)';
+
 function validGalleryToken(token) {
   return typeof token === 'string' && /^[A-Za-z0-9_-]{32}$/.test(token);
 }
@@ -111,6 +113,7 @@ function galleryLink(token, publicUrl) {
 }
 
 module.exports = {
+  LEGACY_GALLERY_NAME,
   publishStudentRecord,
   galleryStudentByToken,
   galleryTokenHealth,

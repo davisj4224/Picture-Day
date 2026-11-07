@@ -73,14 +73,14 @@
       <div class="head">
         <div>
           <h1>Photo shoot projects</h1>
-          <p>Each project has its own photos, galleries, QR options, and publication status. The student roster and existing student QR cards are shared.</p>
+          <p>Each project has its own photos, galleries, QR options, and publication status. The student roster and existing student QR cards are shared. Original Picture Day (Existing Photos) remains a separate collection.</p>
         </div>
       </div>
       <div class="card">
-        <h2>Select a project</h2>
+        <h2>Select a photo collection</h2>
         <div class="row">
-          <select id="activeProject" style="max-width:380px"><option value="">Choose a project…</option></select>
-          <span id="activeProjectStatus" class="hint" style="margin:0">No project selected. Uploading is disabled.</span>
+          <select id="activeProject" style="max-width:380px"><option value="">Choose a photo collection…</option></select>
+          <span id="activeProjectStatus" class="hint" style="margin:0">No photo collection selected. Uploading is disabled.</span>
         </div>
       </div>
       <div class="card" id="createProjectCard" hidden>
@@ -186,7 +186,7 @@
       </div>
 
       <div class="card">
-        <p class="hint" id="uploadProjectStatus">Select an active project in Photo shoot projects before uploading.</p>
+        <p class="hint" id="uploadProjectStatus">Select an active photo-shoot project before uploading.</p>
         <div class="field" style="max-width:340px">
           <label for="batchName">Name this batch</label>
           <input type="text" id="batchName" placeholder="Card 1 — Tuesday morning">
@@ -233,6 +233,7 @@
         <button class="small" id="reloadReview">Reload</button>
       </div>
       <div class="card">
+        <div id="reviewProjectName" class="gallery-project-title"></div>
         <div class="row" style="margin-bottom:12px">
           <select id="assignTo" style="max-width:320px"><option value="">Choose a student…</option></select>
           <button id="assignSelected" class="primary">Assign selected photos</button>
@@ -254,7 +255,10 @@
       </div>
 
       <div class="card">
+        <div id="galleryProjectName" class="gallery-project-title" hidden></div>
         <div class="row" style="margin-bottom:12px">
+          <label for="galleryProject">Photo collection</label>
+          <select id="galleryProject" style="max-width:380px"><option value="">Choose a photo collection…</option></select>
           <select id="galleryStudent" style="max-width:340px"><option value="">Choose a student…</option></select>
           <select id="projectGalleryStudent" style="max-width:340px" hidden><option value="">Choose a student…</option></select>
           <span id="galleryStatus" class="hint" style="margin:0"></span>

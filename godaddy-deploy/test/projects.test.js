@@ -298,17 +298,25 @@ test('project archive rolls back both state changes if either update fails', asy
 
 test('project gallery token lookup and photo lists remain scoped to project and student', async () => {
   const token = 'C'.repeat(32);
+  const secondToken = 'D'.repeat(32);
   const rows = new Map([
     [token, {
       project_id: 4, student_id: 21, gallery_token: token,
       expires_at: Date.now() + 60_000, published_at: Date.now(),
       archived_at: null, republish_required: 0,
       project_name: 'Fall', first_name: 'Sam', last_name: 'Student'
+    }],
+    [secondToken, {
+      project_id: 5, student_id: 21, gallery_token: secondToken,
+      expires_at: Date.now() + 60_000, published_at: Date.now(),
+      archived_at: null, republish_required: 0,
+      project_name: 'Spring', first_name: 'Sam', last_name: 'Student'
     }]
   ]);
   const photos = [
     { id: 1, project_id: 4, student_id: 21, published: 1, hidden: 0, is_marker: 0 },
-    { id: 2, project_id: 5, student_id: 21, published: 1, hidden: 0, is_marker: 0 },
+    { id: 5, project_id: 5, student_id: 21, published: 1, hidden: 0, is_marker: 0 },
+    { id: 2, project_id: 6, student_id: 21, published: 1, hidden: 0, is_marker: 0 },
     { id: 3, project_id: 4, student_id: 22, published: 1, hidden: 0, is_marker: 0 },
     { id: 4, project_id: 4, student_id: 21, published: 0, hidden: 0, is_marker: 0 }
   ];
@@ -336,7 +344,11 @@ test('project gallery token lookup and photo lists remain scoped to project and 
   assert.equal(gallery.student.project_name, 'Fall');
   const visiblePhotos = await projectGalleryPhotos(db, gallery.student.project_id, gallery.student.student_id);
   assert.deepEqual(visiblePhotos.map((photo) => photo.id), [1]);
-  assert.equal((await projectGalleryStudentByToken(db, 'missing')).status, 'not-found');
+  const secondGallery = await projectGalleryStudentByToken(db, secondToken);
+  assert.equal(secondGallery.student.student_id, gallery.student.student_id);
+  assert.equal(secondGallery.student.project_name, 'Spring');
+  const secondVisiblePhotos = await projectGalleryPhotos(db, secondGallery.student.project_id, secondGallery.student.student_id);
+  assert.deepEqual(secondVisiblePhotos.map((photo) => photo.id), [5]);
   assert.equal((await projectGalleryStudentByToken(db, 'missing')).status, 'not-found');
 });
 

@@ -19,6 +19,7 @@ const { requireAdmin } = require('./lib/admin-auth.js');
 const cards = require('./lib/cards.js');
 const mail = require('./lib/mail.js');
 const {
+  LEGACY_GALLERY_NAME,
   publishStudentRecord,
   galleryStudentByToken,
   galleryTokenHealth,
@@ -1006,6 +1007,7 @@ app.get(
     const b = branding('published');
     res.json({
       student: { firstName: s.first_name, lastName: s.last_name, grade: s.grade, teacher: s.teacher },
+      project: { id: null, name: LEGACY_GALLERY_NAME, legacy: true },
       expiresAt: s.expires_at,
       photos: photos.map((p) => ({ id: p.id })),
       branding: b

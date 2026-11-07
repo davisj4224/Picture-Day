@@ -24,6 +24,10 @@
     <section id="gallery" hidden>
       <div class="gal-top gallery-block" data-block="galleryWelcome">
         <div>
+          <div class="gallery-project-context" id="projectContext" hidden>
+            <span>Photo session</span>
+            <strong id="projectName"></strong>
+          </div>
           <h1 id="who"></h1>
           <p id="welcome"></p>
         </div>
@@ -120,9 +124,11 @@ async function realGallery() {
 
   const data = await res.json();
   header(data.branding);
-  if (data.project) document.getElementById('event').textContent = data.project.name;
+  const projectName = data.project?.name || 'Original Picture Day (Existing Photos)';
+  document.getElementById('projectName').textContent = projectName;
+  document.getElementById('projectContext').hidden = false;
   applyLayout(data.branding.layouts?.gallery);
-  document.title = `${data.student.firstName}'s photos`;
+  document.title = `${data.student.firstName}'s photos · ${projectName}`;
   document.getElementById('who').textContent = `${data.student.firstName} ${data.student.lastName}`;
   document.getElementById('welcome').textContent = data.branding.welcome;
   if (data.expiresAt)

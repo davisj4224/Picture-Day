@@ -192,6 +192,7 @@ tr:hover td { background: #fafbfa; }
 .pill.live { color: var(--primary); border-color: #b7d1d7; background: #eff6f8; }
 .pill.wait { color: var(--warn); border-color: #ead2a4; background: #fdf7ea; }
 .pill.none { color: var(--muted); border-color: var(--line); background: #f6f7f6; }
+.gallery-project-title { margin: 0 0 14px; padding: 10px 12px; border-left: 4px solid var(--accent); background: #eff4f4; color: var(--primary-dk); font-size: 1.05rem; font-weight: 700; }
 
 /* ------------------------------------------------------------- photos */
 
