@@ -6,7 +6,9 @@ const { requireAdmin } = require('../lib/admin-auth');
 const { galleryLink } = require('../lib/gallery');
 const {
   buildProjectExportCsv,
+  buildProjectEmailPreviews,
   loadProjectEmailContext,
+  parseProjectEmailAddresses,
   renderProjectEmail,
   resolveProjectEmailRecipients
 } = require('../lib/project-email');
@@ -23,6 +25,7 @@ function student(id, projectId, token, overrides = {}) {
     gallery_token: token,
     expires_at: Date.now() + 60_000,
     published_at: Date.now(),
+    active: 1,
     first_name: `First${id}`,
     last_name: `Last${id}`,
     parent_email: `parent${id}@example.test`,
@@ -81,6 +84,33 @@ test('project-scoped database resolution cannot return another project student o
   assert.equal(otherStudent.recipients.length, 0);
 });
 
+test('multiple selected students preview separate messages and only their own guardian addresses', () => {
+  const project = { id: 8, name: 'Winter Pictures' };
+  const rows = [
+    student(12, 8, projectToken, { parent_email: 'parent12@example.test; guardian12@example.test' }),
+    student(13, 8, otherProjectToken, { parent_email: 'parent13@example.test, guardian13@example.test' })
+  ];
+  const context = resolveProjectEmailRecipients(project, rows, publicUrl, Date.now(), [12, 13]);
+  const previews = buildProjectEmailPreviews(
+    project,
+    context.recipients,
+    { emailSubject: 'Photos for {{student}}', emailBody: 'Hello {{first}}. {{link}}' },
+    { schoolName: 'North School', year: '2026' },
+    publicUrl
+  );
+
+  assert.equal(previews.length, 2);
+  assert.deepEqual(previews[0].recipientEmails, ['parent12@example.test', 'guardian12@example.test']);
+  assert.deepEqual(previews[1].recipientEmails, ['parent13@example.test', 'guardian13@example.test']);
+  assert.match(previews[0].text, /First12 Last12/);
+  assert.match(previews[0].text, new RegExp(projectToken));
+  assert.doesNotMatch(previews[0].text, new RegExp(otherProjectToken));
+  assert.match(previews[1].text, /First13 Last13/);
+  assert.match(previews[1].text, new RegExp(otherProjectToken));
+  assert.equal(previews[0].recipientEmails.includes('parent13@example.test'), false);
+  assert.equal(previews[1].recipientEmails.includes('parent12@example.test'), false);
+});
+
 test('unpublished, expired, malformed-token, and archived galleries are unavailable to email', () => {
   const rows = [
     student(1, 8, 'A'.repeat(32), { published_at: null }),
@@ -108,6 +138,33 @@ test('unpublished, expired, malformed-token, and archived galleries are unavaila
   );
   assert.deepEqual(archived.recipients, []);
   assert.deepEqual(archived.invalidIds, [4]);
+});
+
+test('inactive galleries and missing or invalid parent email addresses are excluded with reasons', () => {
+  const rows = [
+    student(1, 8, projectToken, { active: 0 }),
+    student(2, 8, otherProjectToken, { parent_email: '' }),
+    student(3, 8, legacyToken, { parent_email: 'not-an-email' }),
+    student(4, 8, 'R'.repeat(32), { parent_email: 'valid@example.test;invalid-address' })
+  ];
+  const result = resolveProjectEmailRecipients(
+    { id: 8, name: 'Winter Pictures', archived_at: null },
+    rows,
+    publicUrl
+  );
+
+  assert.deepEqual(result.recipients.map((row) => row.student_id), [4]);
+  assert.deepEqual(result.recipients[0].recipientEmails, ['valid@example.test']);
+  assert.deepEqual(result.recipients[0].invalidEmails, ['invalid-address']);
+  assert.deepEqual(result.excluded.map((row) => row.reason), [
+    'Student is inactive.',
+    'No parent/guardian email address is on file.',
+    'No valid parent/guardian email address is on file.'
+  ]);
+  assert.deepEqual(parseProjectEmailAddresses('one@example.test, ONE@example.test, two@example.test;bad'), {
+    valid: ['one@example.test', 'two@example.test'],
+    invalid: ['bad']
+  });
 });
 
 test('project export preserves legacy columns and only emits the selected valid project link', () => {
@@ -154,7 +211,7 @@ test('administrator authorization allows admins and rejects staff for project em
   });
   assert.equal(allowed, true);
 
-  for (const action of ['preview', 'send']) {
+  for (const action of ['preview', 'send-all', 'queue/1/retry']) {
     let statusCode;
     let responseBody;
     const response = {

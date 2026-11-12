@@ -12,6 +12,8 @@ const REQUIRED_TABLES = [
   'photos',
   'email_log',
   'gallery_email_attempts',
+  'project_email_queue_items',
+  'project_email_queue_recipients',
   'settings',
   'sessions'
 ];
@@ -24,6 +26,8 @@ const REQUIRED_COLUMNS = {
   photos: ['id', 'batch_id', 'student_id', 'project_id', 'file', 'thumb', 'original', 'bytes', 'captured_at', 'seq_index', 'qr_value', 'is_marker', 'hidden', 'published', 'assigned_by', 'created_at'],
   email_log: ['id', 'student_id', 'to_email', 'status', 'detail', 'sent_at'],
   gallery_email_attempts: ['id', 'student_id', 'project_id', 'recipient_email', 'email_type', 'attempted_at', 'status', 'error_message', 'outcome', 'diagnostic_json', 'message_id'],
+  project_email_queue_items: ['id', 'project_id', 'student_id', 'subject', 'body', 'gallery_link', 'status', 'created_at', 'updated_at'],
+  project_email_queue_recipients: ['id', 'queue_item_id', 'recipient_email', 'status', 'attempted_at', 'claimed_at', 'error_message', 'outcome', 'diagnostic_json', 'message_id', 'attempt_id'],
   settings: ['key', 'value'],
   sessions: ['sid', 'sess', 'expires_at']
 };
@@ -248,6 +252,37 @@ async function initialize() {
       KEY idx_gallery_attempts_project_student_time (project_id, student_id, attempted_at),
       CONSTRAINT fk_gallery_attempt_student FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
       CONSTRAINT fk_gallery_attempt_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+    `CREATE TABLE IF NOT EXISTS project_email_queue_items (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      project_id BIGINT UNSIGNED NOT NULL,
+      student_id BIGINT UNSIGNED NOT NULL,
+      subject VARCHAR(998) NOT NULL,
+      body LONGTEXT NOT NULL,
+      gallery_link VARCHAR(2048) NOT NULL,
+      status VARCHAR(32) NOT NULL DEFAULT 'active',
+      created_at BIGINT NOT NULL,
+      updated_at BIGINT NOT NULL,
+      UNIQUE KEY uq_project_email_queue_gallery (project_id, student_id),
+      KEY idx_project_email_queue_status (project_id, status, updated_at),
+      CONSTRAINT fk_project_email_queue_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      CONSTRAINT fk_project_email_queue_student FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+    `CREATE TABLE IF NOT EXISTS project_email_queue_recipients (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      queue_item_id BIGINT UNSIGNED NOT NULL,
+      recipient_email VARCHAR(254) NOT NULL,
+      status VARCHAR(32) NOT NULL DEFAULT 'queued',
+      attempted_at BIGINT NULL,
+      claimed_at BIGINT NULL,
+      error_message VARCHAR(300) NULL,
+      outcome VARCHAR(32) NULL,
+      diagnostic_json LONGTEXT NULL,
+      message_id VARCHAR(255) NULL,
+      attempt_id BIGINT UNSIGNED NULL,
+      UNIQUE KEY uq_project_email_queue_recipient (queue_item_id, recipient_email),
+      KEY idx_project_email_queue_recipient_status (queue_item_id, status),
+      CONSTRAINT fk_project_email_queue_recipient_item FOREIGN KEY (queue_item_id) REFERENCES project_email_queue_items(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
     `CREATE TABLE IF NOT EXISTS settings (
       \`key\` VARCHAR(191) NOT NULL PRIMARY KEY,

@@ -55,9 +55,15 @@ const {
 } = require('./lib/projects.js');
 const {
   loadProjectEmailContext: getProjectEmailContext,
-  renderProjectEmail,
+  buildProjectEmailPreviews,
   buildProjectExportCsv
 } = require('./lib/project-email.js');
+const {
+  SENDING_LEASE_MS,
+  persistProjectEmailPreviews,
+  deliverQueueRecipients,
+  summarizeQueueRecipients
+} = require('./lib/project-email-queue.js');
 const {
   BRAND_UPLOAD_LIMIT_BYTES,
   createBrandUploadMiddleware,
@@ -1264,7 +1270,16 @@ app.get('/api/projects/:id/email/recipients', requireAdmin, ok(async (req, res) 
       id: student.student_id,
       firstName: student.first_name,
       lastName: student.last_name,
-      parentEmail: student.parent_email
+      parentEmail: student.parent_email,
+      recipientEmails: student.recipientEmails,
+      invalidEmails: student.invalidEmails
+    })),
+    excluded: context.excluded.map((student) => ({
+      id: student.student_id,
+      firstName: student.first_name,
+      lastName: student.last_name,
+      parentEmail: student.parent_email || '',
+      reason: student.reason
     }))
   });
 }));
@@ -1297,92 +1312,316 @@ app.post('/api/projects/:id/email/preview', requireAdmin, ok(async (req, res) =>
   if (!Number.isSafeInteger(projectId) || projectId < 1) return res.status(400).json({ error: 'Invalid project ID.' });
   const ids = selectedEmailIds(req.body);
   if (!ids?.length) return res.status(400).json({ error: 'Choose at least one recipient using valid student IDs.' });
-  const context = await getProjectEmailContext(db, projectId, config().publicUrl, Date.now(), ids);
+  const cfg = config();
+  const context = await getProjectEmailContext(db, projectId, cfg.publicUrl, Date.now(), ids);
   if (!context) return res.status(404).json({ error: 'Project not found.' });
   if (context.project.archived_at) return res.status(409).json({ error: 'Archived projects cannot be emailed.' });
-  if (context.invalidIds.length) {
-    return res.status(409).json({ error: 'Some selected students do not have an available published gallery for this project.' });
-  }
-  if (!context.recipients.length) return res.status(409).json({ error: 'No eligible recipients were selected.' });
-  const sample = context.recipients[0];
-  const rendered = renderProjectEmail(context.project, sample, config(), branding('published'), config().publicUrl);
+  const previews = buildProjectEmailPreviews(
+    context.project,
+    context.recipients,
+    cfg,
+    branding('published'),
+    cfg.publicUrl
+  );
+  await persistProjectEmailPreviews(db, projectId, previews);
   res.json({
     projectName: context.project.name,
-    recipientCount: context.recipients.length,
-    preview: {
-      student: `${sample.first_name} ${sample.last_name}`,
-      subject: rendered.subject,
-      text: rendered.text,
-      galleryLink: rendered.link
-    }
+    galleryEmailCount: previews.length,
+    recipientCount: previews.reduce((count, preview) => count + preview.recipientEmails.length, 0),
+    previews,
+    excluded: context.excluded.map((student) => ({
+      studentId: student.student_id,
+      student: [student.first_name, student.last_name].filter(Boolean).join(' '),
+      reason: student.reason
+    }))
   });
 }));
 
-app.post('/api/projects/:id/email/send', requireAdmin, ok(async (req, res) => {
+async function loadProjectEmailQueue(projectId, itemId = null) {
+  const items = await db.prepare(
+    `SELECT q.id, q.project_id, q.student_id, q.subject, q.body, q.gallery_link,
+       q.created_at, s.first_name, s.last_name
+     FROM project_email_queue_items q
+     JOIN students s ON s.id = q.student_id
+     WHERE q.project_id = ? AND q.status = 'active'${itemId === null ? '' : ' AND q.id = ?'}
+     ORDER BY q.created_at, q.id`
+  ).all(...(itemId === null ? [projectId] : [projectId, itemId]));
+  if (!items.length) return [];
+  const recipients = await db.prepare(
+    `SELECT r.id, r.queue_item_id, r.recipient_email, r.status, r.attempted_at,
+       r.error_message, r.outcome, r.diagnostic_json, r.message_id
+     FROM project_email_queue_recipients r
+     JOIN project_email_queue_items q ON q.id = r.queue_item_id
+     WHERE q.project_id = ? AND q.status = 'active'
+     ORDER BY r.queue_item_id, r.id`
+  ).all(projectId);
+  const byItem = new Map();
+  for (const recipient of recipients) {
+    if (!byItem.has(Number(recipient.queue_item_id))) byItem.set(Number(recipient.queue_item_id), []);
+    byItem.get(Number(recipient.queue_item_id)).push(recipient);
+  }
+  return items.filter((item) => itemId === null || Number(item.id) === Number(itemId)).map((item) => {
+    const itemRecipients = byItem.get(Number(item.id)) || [];
+    const counts = summarizeQueueRecipients(itemRecipients);
+    const statuses = Object.keys(counts).filter((status) => counts[status] > 0);
+    const status = statuses.includes('sending')
+      ? 'sending'
+      : statuses.includes('queued')
+        ? 'queued'
+        : statuses.includes('failed') || statuses.includes('unresolved')
+          ? 'needs-retry'
+          : statuses.includes('accepted')
+            ? 'accepted'
+            : 'excluded';
+    return {
+      id: item.id,
+      studentId: item.student_id,
+      student: `${item.first_name} ${item.last_name}`,
+      subject: item.subject,
+      body: item.body,
+      galleryLink: item.gallery_link,
+      status,
+      counts,
+      recipients: itemRecipients
+    };
+  });
+}
+
+async function expireStaleProjectEmailClaims(projectId) {
+  const reason = 'The previous send did not record a final gateway result.';
+  await db.prepare(
+    `UPDATE project_email_queue_recipients r
+     JOIN project_email_queue_items q ON q.id = r.queue_item_id
+     JOIN gallery_email_attempts a ON a.id = r.attempt_id
+     SET r.status = 'unresolved', r.outcome = 'unknown', r.error_message = ?, r.claimed_at = NULL,
+       a.status = 'unresolved', a.outcome = 'unknown', a.error_message = ?,
+       a.diagnostic_json = ?
+     WHERE q.project_id = ? AND q.status = 'active'
+       AND r.status = 'sending' AND r.claimed_at < ?`
+  ).run(
+    reason,
+    reason,
+    JSON.stringify({ outcome: 'unknown', unknownReason: 'send_process_interrupted' }),
+    projectId,
+    Date.now() - SENDING_LEASE_MS
+  );
+}
+
+function summarizeProjectEmailQueue(items) {
+  return items.reduce((totals, item) => {
+    totals.galleryEmails++;
+    for (const [status, count] of Object.entries(item.counts)) totals[status] += count;
+    return totals;
+  }, { galleryEmails: 0, queued: 0, sending: 0, accepted: 0, failed: 0, unresolved: 0, excluded: 0 });
+}
+
+app.get('/api/projects/:id/email/queue', requireAdmin, ok(async (req, res) => {
   const projectId = Number(req.params.id);
   if (!Number.isSafeInteger(projectId) || projectId < 1) return res.status(400).json({ error: 'Invalid project ID.' });
-  const ids = selectedEmailIds(req.body);
-  if (!ids?.length) return res.status(400).json({ error: 'Choose at least one recipient using valid student IDs.' });
-  if (!mail.configured()) return res.status(400).json({ error: 'Email is not configured.' });
-  const context = await getProjectEmailContext(db, projectId, config().publicUrl, Date.now(), ids);
-  if (!context) return res.status(404).json({ error: 'Project not found.' });
-  if (context.project.archived_at) return res.status(409).json({ error: 'Archived projects cannot be emailed.' });
-  if (context.invalidIds.length) {
-    return res.status(409).json({ error: 'Some selected students do not have an available published gallery for this project.' });
-  }
-  if (!context.recipients.length) return res.status(409).json({ error: 'No eligible recipients were selected.' });
+  const project = await db.prepare('SELECT id, name FROM projects WHERE id = ?').get(projectId);
+  if (!project) return res.status(404).json({ error: 'Project not found.' });
+  await expireStaleProjectEmailClaims(projectId);
+  const items = await loadProjectEmailQueue(projectId);
+  res.json({ projectName: project.name, items, summary: summarizeProjectEmailQueue(items) });
+}));
 
+app.post('/api/projects/:id/email/queue/:itemId/remove', requireAdmin, ok(async (req, res) => {
+  const projectId = Number(req.params.id);
+  const itemId = Number(req.params.itemId);
+  if (!Number.isSafeInteger(projectId) || projectId < 1 || !Number.isSafeInteger(itemId) || itemId < 1) {
+    return res.status(400).json({ error: 'Invalid project or queue item ID.' });
+  }
+  const removed = await db.transaction(async (tx) => {
+    const item = await tx.prepare(
+      'SELECT id FROM project_email_queue_items WHERE id = ? AND project_id = ? FOR UPDATE'
+    ).get(itemId, projectId);
+    if (!item) return null;
+    const sending = await tx.prepare(
+      `SELECT id FROM project_email_queue_recipients
+       WHERE queue_item_id = ? AND status = 'sending' LIMIT 1 FOR UPDATE`
+    ).get(itemId);
+    if (sending) return false;
+    await tx.prepare(
+      `UPDATE project_email_queue_items SET status = 'removed', updated_at = ?
+       WHERE id = ? AND project_id = ?`
+    ).run(Date.now(), itemId, projectId);
+    return true;
+  });
+  if (removed === null) return res.status(404).json({ error: 'Queue item not found.' });
+  if (!removed) return res.status(409).json({ error: 'An email in this gallery is currently sending.' });
+  res.json({ removed: true });
+}));
+
+async function processProjectEmailQueue(projectId, { retry = false, itemId = null } = {}) {
+  const project = await db.prepare('SELECT id, name, archived_at FROM projects WHERE id = ?').get(projectId);
+  if (!project) return { status: 404, body: { error: 'Project not found.' } };
+  if (project.archived_at) return { status: 409, body: { error: 'Archived projects cannot be emailed.' } };
   const cfg = config();
   const palette = branding('published').palette;
-  const result = { attempted: 0, acceptedByGateway: 0, failed: 0, errors: [] };
-  for (const student of context.recipients) {
-    const attemptedAt = Date.now();
-    const attempt = await db.prepare(
-      `INSERT INTO gallery_email_attempts
-        (student_id, project_id, recipient_email, email_type, attempted_at, status)
-       VALUES (?, ?, ?, 'project-gallery', ?, 'pending')`
-    ).run(student.student_id, projectId, String(student.parent_email).trim(), attemptedAt);
-    result.attempted++;
-    try {
-      const rendered = renderProjectEmail(context.project, student, cfg, branding('published'), cfg.publicUrl);
-      const delivery = await mail.send({
-        to: String(student.parent_email).trim(),
-        from: cfg.emailFrom,
-        replyTo: cfg.emailReplyTo,
-        subject: rendered.subject,
-        text: rendered.text,
-        link: rendered.link,
-        palette
-      });
-      await db.prepare(
-        `UPDATE gallery_email_attempts
-         SET status = ?, outcome = ?, diagnostic_json = ?, message_id = ?
-         WHERE id = ?`
-      ).run('accepted', delivery.outcome, JSON.stringify(delivery.diagnostics), delivery.messageId, attempt.lastInsertRowid);
-      result.acceptedByGateway++;
-    } catch (error) {
-      const message = String(error?.message || error).slice(0, 300);
-      await db.prepare(
-        `UPDATE gallery_email_attempts
-         SET status = ?, error_message = ?, outcome = ?, diagnostic_json = ?
-         WHERE id = ?`
-      ).run(
-        'failed',
-        message,
-        error.diagnostics?.outcome || 'unknown',
-        error.diagnostics ? JSON.stringify(error.diagnostics) : null,
-        attempt.lastInsertRowid
-      );
-      result.failed++;
-      result.errors.push({
-        studentId: student.student_id,
-        error: message,
-        outcome: error.diagnostics?.outcome || 'unknown',
-        diagnostics: error.diagnostics || null
-      });
+  await expireStaleProjectEmailClaims(projectId);
+  const allQueueItems = await loadProjectEmailQueue(projectId);
+  const queueItems = allQueueItems.filter((item) => itemId === null || Number(item.id) === Number(itemId));
+  const context = await getProjectEmailContext(db, projectId, cfg.publicUrl);
+  const currentStudents = new Map(context.recipients.map((student) => [Number(student.student_id), student]));
+  const result = { attempted: 0, acceptedByGateway: 0, failed: 0, unresolved: 0, excluded: 0, errors: [] };
+
+  for (const item of queueItems) {
+    const current = currentStudents.get(Number(item.studentId));
+    const expectedEmails = new Set((current?.recipientEmails || []).map((email) => email.toLowerCase()));
+    const validLink = current && current.link === item.galleryLink;
+    for (const recipient of item.recipients) {
+      const eligibleStatus = retry
+        ? ['failed', 'unresolved'].includes(recipient.status)
+        : recipient.status === 'queued';
+      if (!eligibleStatus) continue;
+      const reason = !current
+        ? context.excluded.find((student) => Number(student.student_id) === Number(item.studentId))?.reason ||
+          'Gallery is no longer eligible.'
+        : !validLink
+          ? 'Gallery link changed after preview; preview this gallery again.'
+          : !expectedEmails.has(String(recipient.recipient_email).toLowerCase())
+            ? 'Recipient is no longer listed for this student; preview again.'
+            : null;
+      if (reason) {
+        await db.prepare(
+          `UPDATE project_email_queue_recipients
+           SET status = 'excluded', error_message = ?, outcome = 'excluded', claimed_at = NULL
+           WHERE id = ? AND status = ?`
+        ).run(reason, recipient.id, recipient.status);
+        result.excluded++;
+      }
     }
+
+    const refreshed = await loadProjectEmailQueue(projectId, item.id);
+    const queueRecipients = refreshed.flatMap((entry) => entry.recipients.map((recipient) => ({
+      ...recipient,
+      student_id: entry.studentId,
+      student: entry.student,
+      subject: entry.subject,
+      body: entry.body,
+      gallery_link: entry.galleryLink
+    })));
+    if (!queueRecipients.length) continue;
+    const delivered = await deliverQueueRecipients(queueRecipients, {
+      retry,
+      claim: async (recipientId, expectedStatus) => db.transaction(async (tx) => {
+        const row = await tx.prepare(
+          `SELECT r.status, q.status AS item_status, q.student_id, q.gallery_link
+           FROM project_email_queue_recipients r
+           JOIN project_email_queue_items q ON q.id = r.queue_item_id
+           WHERE r.id = ? AND q.project_id = ? FOR UPDATE`
+        ).get(recipientId, projectId);
+        if (!row || row.status !== expectedStatus || row.item_status !== 'active') return false;
+        await tx.prepare('SELECT id FROM projects WHERE id = ? FOR UPDATE').get(projectId);
+        await tx.prepare(
+          'SELECT student_id FROM project_students WHERE project_id = ? AND student_id = ? FOR UPDATE'
+        ).get(projectId, row.student_id);
+        await tx.prepare('SELECT id FROM students WHERE id = ? FOR UPDATE').get(row.student_id);
+        const freshContext = await getProjectEmailContext(tx, projectId, cfg.publicUrl, Date.now(), [row.student_id]);
+        const currentStudent = freshContext?.recipients.find(
+          (student) => Number(student.student_id) === Number(row.student_id)
+        );
+        const currentEmailSet = new Set((currentStudent?.recipientEmails || []).map((email) => email.toLowerCase()));
+        const exclusionReason = !currentStudent
+          ? freshContext?.excluded.find((student) => Number(student.student_id) === Number(row.student_id))?.reason ||
+            'Gallery is no longer eligible.'
+          : currentStudent.link !== row.gallery_link
+            ? 'Gallery link changed after preview; preview this gallery again.'
+            : !currentEmailSet.has(String(queueRecipients.find(
+              (recipient) => Number(recipient.id) === Number(recipientId)
+            ).recipient_email).toLowerCase())
+              ? 'Recipient is no longer listed for this student; preview again.'
+              : null;
+        if (exclusionReason) {
+          await tx.prepare(
+            `UPDATE project_email_queue_recipients
+             SET status = 'excluded', error_message = ?, outcome = 'excluded', claimed_at = NULL
+             WHERE id = ? AND status = ?`
+          ).run(exclusionReason, recipientId, expectedStatus);
+          return { excluded: true };
+        }
+        const now = Date.now();
+        const attempt = await tx.prepare(
+          `INSERT INTO gallery_email_attempts
+            (student_id, project_id, recipient_email, email_type, attempted_at, status)
+           VALUES (?, ?, ?, 'project-gallery', ?, 'pending')`
+        ).run(queueRecipients.find((recipient) => Number(recipient.id) === Number(recipientId)).student_id,
+          projectId,
+          queueRecipients.find((recipient) => Number(recipient.id) === Number(recipientId)).recipient_email,
+          now);
+        const updated = await tx.prepare(
+          `UPDATE project_email_queue_recipients
+           SET status = 'sending', attempted_at = ?, claimed_at = ?, attempt_id = ?
+           WHERE id = ? AND status = ?`
+        ).run(now, now, attempt.lastInsertRowid, recipientId, expectedStatus);
+        return updated.changes === 1 ? attempt.lastInsertRowid : false;
+      }),
+      send: (recipient) => {
+        if (!mail.configured()) throw new Error('Email is not configured.');
+        return mail.send({
+          to: recipient.recipient_email,
+          subject: recipient.subject,
+          text: recipient.body,
+          link: recipient.gallery_link,
+          replyTo: cfg.emailReplyTo,
+          palette
+        });
+      },
+      record: async (recipient, status, delivery, error) => {
+        const outcome = delivery?.outcome || error?.diagnostics?.outcome || (status === 'accepted' ? 'accepted' : 'unknown');
+        const diagnostics = delivery?.diagnostics || error?.diagnostics || null;
+        const message = error ? String(error.message || error).slice(0, 300) : null;
+        await db.transaction(async (tx) => {
+          await tx.prepare(
+            `UPDATE project_email_queue_recipients
+             SET status = ?, error_message = ?, outcome = ?, diagnostic_json = ?, message_id = ?,
+               claimed_at = NULL
+             WHERE id = ? AND status = 'sending'`
+          ).run(status, message, outcome, diagnostics ? JSON.stringify(diagnostics) : null,
+            delivery?.messageId || null, recipient.id);
+          await tx.prepare(
+            `UPDATE gallery_email_attempts
+             SET status = ?, error_message = ?, outcome = ?, diagnostic_json = ?, message_id = ?
+             WHERE id = ?`
+          ).run(status, message, outcome, diagnostics ? JSON.stringify(diagnostics) : null,
+            delivery?.messageId || null, recipient.attempt_id);
+        });
+      }
+    });
+    result.attempted += delivered.attempted;
+    result.acceptedByGateway += delivered.acceptedByGateway;
+    result.failed += delivered.failed;
+    result.unresolved += delivered.unresolved;
+    result.excluded += delivered.excluded;
+    result.errors.push(...delivered.errors);
   }
-  res.json({ projectName: context.project.name, ...result });
+  const finalQueue = await loadProjectEmailQueue(projectId);
+  return {
+    status: 200,
+    body: {
+      projectName: project.name,
+      ...result,
+      summary: summarizeProjectEmailQueue(finalQueue),
+      excludedGalleries: context.excluded.length
+    }
+  };
+}
+
+app.post('/api/projects/:id/email/send-all', requireAdmin, ok(async (req, res) => {
+  const projectId = Number(req.params.id);
+  if (!Number.isSafeInteger(projectId) || projectId < 1) return res.status(400).json({ error: 'Invalid project ID.' });
+  const result = await processProjectEmailQueue(projectId);
+  return res.status(result.status).json(result.body);
+}));
+
+app.post('/api/projects/:id/email/queue/:itemId/retry', requireAdmin, ok(async (req, res) => {
+  const projectId = Number(req.params.id);
+  const itemId = Number(req.params.itemId);
+  if (!Number.isSafeInteger(projectId) || projectId < 1 || !Number.isSafeInteger(itemId) || itemId < 1) {
+    return res.status(400).json({ error: 'Invalid project or queue item ID.' });
+  }
+  const result = await processProjectEmailQueue(projectId, { retry: true, itemId });
+  return res.status(result.status).json(result.body);
 }));
 
 app.post(

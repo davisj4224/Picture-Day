@@ -28,11 +28,13 @@ test('schema is additive and includes all persistent application tables', () => 
     'settings',
     'email_log',
     'gallery_email_attempts',
+    'project_email_queue_items',
+    'project_email_queue_recipients',
     'sessions'
   ]) {
     assert.match(databaseSource, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
   }
-  assert.doesNotMatch(databaseSource, /\bDROP\s+TABLE\b|\bDELETE\s+FROM\s+(users|students|photos|batches|settings|email_log|gallery_email_attempts)\b/i);
+  assert.doesNotMatch(databaseSource, /\bDROP\s+TABLE\b|\bDELETE\s+FROM\s+(users|students|photos|batches|settings|email_log|gallery_email_attempts|project_email_queue_items|project_email_queue_recipients)\b/i);
   assert.doesNotMatch(serverSource, /better-sqlite3|SqliteSessionStore|pictureday\.db/);
 });
 
@@ -42,6 +44,15 @@ test('private photo files are guarded from static access and keep route-based ac
   assert.match(serverSource, /app\.get\('\/api\/gallery\/:token\/photo\/:id'/);
   assert.match(serverSource, /app\.get\('\/api\/admin\/database-health', requireAdmin/);
   assert.doesNotMatch(serverSource, /\/api\/debug\/storage-check-7f3a9c/);
+});
+
+test('project email preview builds and persists messages without calling the email gateway', () => {
+  const start = serverSource.indexOf("app.post('/api/projects/:id/email/preview'");
+  const end = serverSource.indexOf('async function loadProjectEmailQueue', start);
+  assert.ok(start >= 0 && end > start, 'project preview route is present');
+  assert.doesNotMatch(serverSource.slice(start, end), /mail\.send\s*\(/);
+  assert.match(serverSource.slice(start, end), /buildProjectEmailPreviews/);
+  assert.match(serverSource.slice(start, end), /persistProjectEmailPreviews/);
 });
 
 const testDatabase = process.env.DB_TEST_NAME || '';

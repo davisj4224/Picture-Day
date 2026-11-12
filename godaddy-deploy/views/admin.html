@@ -299,8 +299,8 @@
       <div class="notice" id="emailNotice" hidden></div>
 
       <div class="card" id="projectEmailCard" hidden>
-        <h2>Photo shoot project links</h2>
-        <p class="hint">Only published, unexpired galleries in the selected active project are available. Preview does not send email.</p>
+        <h2>Bulk parent emails</h2>
+        <p class="hint">Select published galleries for one active project. Every preview and email is specific to one student and only that student's parent/guardian addresses. Preview never sends.</p>
         <div class="field">
           <label for="projectEmailProject">Photo shoot project</label>
           <select id="projectEmailProject"><option value="">Choose a project…</option></select>
@@ -308,15 +308,38 @@
         <a class="btn small" id="projectEmailExport" hidden>Export this project's links as CSV</a>
         <p class="hint" id="projectEmailStatus" role="status" aria-live="polite"></p>
         <div style="overflow-x:auto"><table id="projectEmailRecipients">
-          <thead><tr><th><input type="checkbox" id="projectEmailAll" style="width:auto"></th><th>Student</th><th>Parent email</th></tr></thead>
-          <tbody><tr><td colspan="3" class="hint">Choose a project to see eligible recipients.</td></tr></tbody>
+          <thead><tr><th>Select</th><th>Student / gallery</th><th>Parent/guardian addresses</th></tr></thead>
+          <tbody><tr><td colspan="3" class="hint">Choose a project to see eligible galleries.</td></tr></tbody>
         </table></div>
         <div class="row" style="margin-top:12px">
-          <button id="previewProjectEmails">Preview selected</button>
-          <button class="primary" id="sendProjectEmails" disabled>Send project links</button>
-          <span class="hint" id="projectEmailCount" style="margin:0"></span>
+          <button id="projectEmailSelectAll">Select All</button>
+          <button id="projectEmailClearSelection">Clear Selection</button>
+          <button id="previewProjectEmails">Preview Selected Emails</button>
+          <span class="hint" id="projectEmailCount" style="margin:0" aria-live="polite"></span>
         </div>
-        <div id="projectEmailPreview" class="notice" hidden style="white-space:pre-wrap;margin-top:12px"></div>
+        <div id="projectEmailExcluded" hidden style="margin-top:16px">
+          <h3>Excluded galleries</h3>
+          <div style="overflow-x:auto"><table>
+            <thead><tr><th>Student</th><th>Parent/guardian email on file</th><th>Why excluded</th></tr></thead>
+            <tbody></tbody>
+          </table></div>
+        </div>
+        <div id="projectEmailPreview" hidden style="margin-top:16px">
+          <h3>Preview each student email</h3>
+          <div id="projectEmailPreviewList"></div>
+        </div>
+        <div class="card" style="margin-top:16px">
+          <h3>Ready to Send</h3>
+          <p class="hint">This queue is saved and stays available after refresh. Removing one email does not affect the others.</p>
+          <div class="row">
+            <button class="primary" id="sendProjectEmails" disabled>Send All Ready Emails</button>
+            <span class="hint" id="projectEmailProgress" role="status" aria-live="polite" style="margin:0"></span>
+          </div>
+          <div style="overflow-x:auto;margin-top:12px"><table id="projectEmailQueue">
+            <thead><tr><th>Student</th><th>Recipients and individual outcomes</th><th>Status</th><th></th></tr></thead>
+            <tbody><tr><td colspan="4" class="hint">Choose a project to load its saved queue.</td></tr></tbody>
+          </table></div>
+        </div>
         <p class="hint">“Accepted by gateway” does not confirm delivery to a recipient's inbox.</p>
         <h3>Recent delivery attempts</h3>
         <div style="overflow-x:auto"><table id="projectEmailHistory">
@@ -326,14 +349,14 @@
       </div>
 
       <div class="card">
-        <h2>Ready to send</h2>
-        <p class="hint">Published galleries whose family has not been emailed yet.</p>
+        <h2>Original Picture Day legacy galleries</h2>
+        <p class="hint">This separate sender is only for the original, non-project galleries.</p>
         <div style="overflow-x:auto"><table id="pendingTable">
           <thead><tr><th><input type="checkbox" id="pendAll" style="width:auto"></th><th>Student</th><th>Grade</th><th>Parent email</th></tr></thead>
           <tbody></tbody>
         </table></div>
         <div class="row" style="margin-top:12px">
-          <button class="primary" id="sendEmails">Send to selected</button>
+          <button class="primary" id="sendEmails">Send selected legacy gallery links</button>
           <span class="hint" id="pendCount" style="margin:0"></span>
         </div>
       </div>

@@ -1092,6 +1092,7 @@ $('#sendEmails').addEventListener('click', async () => {
 });
 
 let projectEmailPreview = null;
+let projectEmailSending = false;
 
 async function loadProjectEmailProjects() {
   const projects = await api('/api/projects');
@@ -1106,34 +1107,42 @@ async function loadProjectEmailProjects() {
   await loadProjectEmailRecipients();
 }
 
-function resetProjectEmailPreview() {
-  projectEmailPreview = null;
-  $('#projectEmailPreview').hidden = true;
-  $('#projectEmailPreview').textContent = '';
-  $('#sendProjectEmails').disabled = true;
-}
-
 async function loadProjectEmailRecipients() {
-  resetProjectEmailPreview();
   const id = $('#projectEmailProject').value;
   const body = $('#projectEmailRecipients tbody');
   if (!id) {
-    body.innerHTML = '<tr><td colspan="3" class="hint">Choose a project to see eligible recipients.</td></tr>';
+    body.innerHTML = '<tr><td colspan="3" class="hint">Choose a project to see eligible galleries.</td></tr>';
     $('#projectEmailCount').textContent = '';
     $('#projectEmailStatus').textContent = '';
     $('#projectEmailExport').hidden = true;
+    $('#projectEmailExcluded').hidden = true;
+    $('#projectEmailPreview').hidden = true;
+    $('#projectEmailQueue tbody').innerHTML = '<tr><td colspan="4" class="hint">Choose a project to load its saved queue.</td></tr>';
+    $('#projectEmailProgress').textContent = '';
+    $('#sendProjectEmails').disabled = true;
     $('#projectEmailHistory tbody').innerHTML = '<tr><td colspan="5" class="hint">Choose a project to view attempts.</td></tr>';
     return;
   }
-  const result = await api(`/api/projects/${id}/email/recipients`);
-  const attempts = await api(`/api/projects/${id}/email/attempts`);
+  const [result, attempts] = await Promise.all([
+    api(`/api/projects/${id}/email/recipients`),
+    api(`/api/projects/${id}/email/attempts`)
+  ]);
   const recipients = result.recipients;
+  const galleryWord = recipients.length === 1 ? 'gallery' : 'galleries';
   body.innerHTML = recipients.length
-    ? recipients.map((student) => `<tr><td><input type="checkbox" data-project-email="${student.id}" checked style="width:auto"></td>
-        <td>${esc(student.lastName)}, ${esc(student.firstName)}</td><td>${esc(student.parentEmail)}</td></tr>`).join('')
-    : '<tr><td colspan="3" class="hint">No published, unexpired project galleries with valid parent emails.</td></tr>';
-  $('#projectEmailStatus').textContent = `${result.project.name}: ${recipients.length} eligible parent(s).`;
-  $('#projectEmailCount').textContent = `${recipients.length} eligible`;
+    ? recipients.map((student) => `<tr><td><input type="checkbox" data-project-email="${student.id}"
+        data-recipient-count="${student.recipientEmails.length}" style="width:auto" aria-label="Select ${esc(student.firstName)} ${esc(student.lastName)}"></td>
+        <td>${esc(student.lastName)}, ${esc(student.firstName)}</td>
+        <td>${student.recipientEmails.map(esc).join('<br>')}${student.invalidEmails.length
+          ? `<p class="hint">Invalid address(es) excluded: ${student.invalidEmails.map(esc).join(', ')}</p>`
+          : ''}</td></tr>`).join('')
+    : '<tr><td colspan="3" class="hint">No eligible published galleries with valid parent/guardian addresses.</td></tr>';
+  $('#projectEmailStatus').textContent = `${result.project.name}: ${recipients.length} eligible published ${galleryWord}.`;
+  $('#projectEmailExcluded').hidden = !result.excluded.length;
+  $('#projectEmailExcluded tbody').innerHTML = result.excluded.length
+    ? result.excluded.map((student) => `<tr><td>${esc(`${student.lastName || ''}, ${student.firstName || ''}`.trim())}</td>
+        <td>${esc(student.parentEmail || '')}</td><td>${esc(student.reason)}</td></tr>`).join('')
+    : '<tr><td colspan="3" class="hint">No galleries are excluded.</td></tr>';
   $('#projectEmailExport').href = `/api/email/export.csv?projectId=${encodeURIComponent(id)}`;
   $('#projectEmailExport').hidden = false;
   $('#projectEmailHistory tbody').innerHTML = attempts.length
@@ -1163,6 +1172,7 @@ async function loadProjectEmailRecipients() {
       }).join('')
     : '<tr><td colspan="5" class="hint">No project email attempts recorded.</td></tr>';
   updateProjectEmailCount();
+  await loadProjectEmailQueue();
 }
 
 function selectedProjectEmailIds() {
@@ -1171,22 +1181,84 @@ function selectedProjectEmailIds() {
 }
 
 function updateProjectEmailCount() {
-  const count = selectedProjectEmailIds().length;
-  $('#projectEmailCount').textContent = `${count} selected`;
-  resetProjectEmailPreview();
+  const selected = $$('#projectEmailRecipients input[data-project-email]:checked');
+  const recipientCount = selected.reduce((count, checkbox) => count + Number(checkbox.dataset.recipientCount || 0), 0);
+  $('#projectEmailCount').textContent =
+    `${selected.length} galleries selected; ${selected.length} gallery emails; ${recipientCount} parent/guardian deliveries expected.`;
+}
+
+function updateProjectEmailQueueProgress(summary) {
+  $('#projectEmailProgress').textContent =
+    `${summary.galleryEmails} gallery emails; ${summary.queued} queued; ${summary.sending} sending; ` +
+    `${summary.accepted} accepted by gateway; ${summary.failed} failed; ${summary.unresolved} unresolved; ` +
+    `${summary.excluded} excluded. Gateway acceptance does not confirm inbox delivery.`;
+  $('#sendProjectEmails').disabled = projectEmailSending || summary.queued === 0;
+}
+
+async function loadProjectEmailQueue() {
+  const projectId = $('#projectEmailProject').value;
+  if (!projectId) return;
+  const queue = await api(`/api/projects/${projectId}/email/queue`);
+  const body = $('#projectEmailQueue tbody');
+  body.innerHTML = queue.items.length
+    ? queue.items.map((item) => {
+        const recipients = item.recipients.map((recipient) => {
+          const label = recipient.status === 'accepted'
+            ? 'Accepted by gateway (inbox unconfirmed)'
+            : recipient.status === 'queued'
+              ? 'Ready to send'
+              : recipient.status === 'sending'
+                ? 'Sending'
+                : recipient.status === 'failed'
+                  ? 'Failed'
+                  : recipient.status === 'unresolved'
+                    ? 'Unresolved; retry requires review'
+                    : `Excluded${recipient.error_message ? `: ${recipient.error_message}` : ''}`;
+          return `<div><strong>${esc(recipient.recipient_email)}</strong> — ${esc(label)}${
+            recipient.error_message && ['failed', 'unresolved'].includes(recipient.status)
+              ? `<br><span class="hint">${esc(recipient.error_message)}</span>`
+              : ''
+          }</div>`;
+        }).join('');
+        const canRetry = item.counts.failed + item.counts.unresolved > 0;
+        const canRemove = item.status !== 'sending';
+        return `<tr><td>${esc(item.student)}<details>
+            <summary>Review saved email</summary>
+            <p><strong>Subject:</strong> ${esc(item.subject)}</p>
+            <p><strong>Gallery:</strong> <a href="${esc(item.galleryLink)}" target="_blank" rel="noopener">${esc(item.galleryLink)}</a></p>
+            <pre style="white-space:pre-wrap">${esc(item.body)}</pre>
+          </details></td>
+          <td>${recipients || '<span class="hint">No recipients</span>'}</td>
+          <td>${esc(item.status)}</td><td>
+            ${canRetry && !projectEmailSending ? `<button class="small" data-project-email-retry="${item.id}">Retry failed / unresolved</button>` : ''}
+            ${canRemove && !projectEmailSending ? `<button class="small" data-project-email-remove="${item.id}">Remove</button>` : ''}
+          </td></tr>`;
+      }).join('')
+    : '<tr><td colspan="4" class="hint">No generated emails are in this project queue yet.</td></tr>';
+  updateProjectEmailQueueProgress(queue.summary);
 }
 
 $('#projectEmailProject').addEventListener('change', () => {
+  projectEmailPreview = null;
+  $('#projectEmailPreview').hidden = true;
   loadProjectEmailRecipients().catch((error) => toast(error.message, 'bad'));
 });
 
 $('#projectEmailRecipients').addEventListener('change', (event) => {
-  if (event.target.matches('input[data-project-email]')) updateProjectEmailCount();
+  if (event.target.matches('input[data-project-email]')) {
+    updateProjectEmailCount();
+  }
 });
 
-$('#projectEmailAll').addEventListener('change', (event) => {
+$('#projectEmailSelectAll').addEventListener('click', () => {
   $$('#projectEmailRecipients input[data-project-email]')
-    .forEach((checkbox) => { checkbox.checked = event.target.checked; });
+    .forEach((checkbox) => { checkbox.checked = true; });
+  updateProjectEmailCount();
+});
+
+$('#projectEmailClearSelection').addEventListener('click', () => {
+  $$('#projectEmailRecipients input[data-project-email]')
+    .forEach((checkbox) => { checkbox.checked = false; });
   updateProjectEmailCount();
 });
 
@@ -1199,37 +1271,98 @@ $('#previewProjectEmails').addEventListener('click', async () => {
       method: 'POST',
       body: { ids }
     });
-    const sample = projectEmailPreview.preview;
-    $('#projectEmailPreview').textContent =
-      `Project: ${projectEmailPreview.projectName}\nRecipients: ${projectEmailPreview.recipientCount}\n` +
-      `Preview for: ${sample.student}\nSubject: ${sample.subject}\nGallery link: ${sample.galleryLink}\n\n${sample.text}`;
+    $('#projectEmailPreviewList').innerHTML = projectEmailPreview.previews.length
+      ? projectEmailPreview.previews.map((preview) => `<article class="notice" style="margin:10px 0">
+          <strong>${esc(preview.student)}</strong><br>
+          <span class="hint">To: ${preview.recipientEmails.map(esc).join(', ')}</span>
+          ${preview.invalidEmails.length
+            ? `<p class="hint">Invalid addresses excluded: ${preview.invalidEmails.map(esc).join(', ')}</p>`
+            : ''}
+          <p><strong>Subject:</strong> ${esc(preview.subject)}</p>
+          <p><strong>Gallery:</strong> <a href="${esc(preview.galleryLink)}" target="_blank" rel="noopener">${esc(preview.galleryLink)}</a></p>
+          <pre style="white-space:pre-wrap">${esc(preview.text)}</pre>
+        </article>`).join('')
+      : '<p class="hint">No selected galleries were eligible to preview. Review the exclusion reasons above.</p>';
     $('#projectEmailPreview').hidden = false;
-    $('#sendProjectEmails').disabled = false;
+    $('#projectEmailExcluded').hidden = projectEmailPreview.excluded.length === 0;
+    await loadProjectEmailQueue();
   } catch (error) {
     toast(error.message, 'bad');
   }
 });
 
-$('#sendProjectEmails').addEventListener('click', async () => {
-  if (!projectEmailPreview) return;
+async function runProjectEmailQueueAction(url) {
+  if (projectEmailSending) return;
   const projectId = $('#projectEmailProject').value;
-  const ids = selectedProjectEmailIds();
-  if (!ids.length) return toast('Choose at least one recipient.', 'bad');
-  if (!confirm(`Send ${ids.length} project gallery email(s) for “${projectEmailPreview.projectName}”?`)) return;
+  if (!projectId) return;
+  projectEmailSending = true;
+  $('#projectEmailProject').disabled = true;
+  $('#previewProjectEmails').disabled = true;
+  $('#projectEmailSelectAll').disabled = true;
+  $('#projectEmailClearSelection').disabled = true;
   $('#sendProjectEmails').disabled = true;
+  const request = api(url, { method: 'POST', body: {} })
+    .then((result) => ({ result }), (error) => ({ error }));
+  let outcome;
+  while (!outcome) {
+    outcome = await Promise.race([
+      request,
+      new Promise((resolve) => setTimeout(() => resolve(null), 700))
+    ]);
+    try {
+      await loadProjectEmailQueue();
+    } catch (error) {
+      $('#projectEmailProgress').textContent = `Sending continues; progress refresh failed: ${error.message}`;
+    }
+  }
+  projectEmailSending = false;
+  $('#projectEmailProject').disabled = false;
+  $('#previewProjectEmails').disabled = false;
+  $('#projectEmailSelectAll').disabled = false;
+  $('#projectEmailClearSelection').disabled = false;
   try {
-    const result = await api(`/api/projects/${projectId}/email/send`, {
-      method: 'POST',
-      body: { ids }
-    });
-    toast(`${result.attempted} attempted; ${result.acceptedByGateway} accepted by gateway; ${result.failed} failed. Gateway acceptance does not confirm inbox delivery.`,
-      result.failed ? 'bad' : 'good');
-    resetProjectEmailPreview();
-    await loadProjectEmailRecipients();
+    if (outcome.error) throw outcome.error;
+    const result = outcome.result;
+    const summary = result.summary;
+    toast(`${result.attempted} recipient sends attempted. Current queue: ${summary.accepted} accepted by gateway; ` +
+      `${summary.failed} failed; ${summary.unresolved} unresolved; ${summary.excluded} recipients excluded; ` +
+      `${result.excludedGalleries} galleries excluded; ${summary.queued} still queued. ` +
+      'Gateway acceptance does not confirm inbox delivery.',
+      summary.failed || summary.unresolved ? 'bad' : 'good');
+    $('#projectEmailProgress').textContent =
+      `Finished: ${result.attempted} attempted this time. Current queue: ${summary.accepted} accepted by gateway; ` +
+      `${summary.failed} failed; ${summary.unresolved} unresolved; ${summary.excluded} recipients excluded; ` +
+      `${result.excludedGalleries} galleries excluded; ${summary.queued} still queued.`;
+    await loadProjectEmailQueue();
   } catch (error) {
     toast(error.message, 'bad');
-    $('#sendProjectEmails').disabled = false;
-    await loadProjectEmailRecipients();
+    try { await loadProjectEmailQueue(); } catch (refreshError) { toast(refreshError.message, 'bad'); }
+  }
+}
+
+$('#sendProjectEmails').addEventListener('click', () => {
+  const selected = $('#projectEmailProgress').textContent.match(/(\d+) queued/);
+  const count = Number(selected?.[1] || 0);
+  if (!count) return;
+  if (!confirm(`Send all ready emails in this project's queue? ${count} guardian recipient(s) are queued.`)) return;
+  const projectId = $('#projectEmailProject').value;
+  runProjectEmailQueueAction(`/api/projects/${projectId}/email/send-all`);
+});
+
+$('#projectEmailQueue').addEventListener('click', async (event) => {
+  const remove = event.target.closest('button[data-project-email-remove]');
+  const retry = event.target.closest('button[data-project-email-retry]');
+  const projectId = $('#projectEmailProject').value;
+  if (!projectId) return;
+  if (remove) {
+    try {
+      await api(`/api/projects/${projectId}/email/queue/${remove.dataset.projectEmailRemove}/remove`, { method: 'POST' });
+      await loadProjectEmailQueue();
+    } catch (error) { toast(error.message, 'bad'); }
+  }
+  if (retry) {
+    if (!confirm('Retry only failed or unresolved recipients for this student? Successful recipients will not be sent again.')) return;
+    runProjectEmailQueueAction(`/api/projects/${projectId}/email/queue/${retry.dataset.projectEmailRetry}/retry`);
   }
 });
 

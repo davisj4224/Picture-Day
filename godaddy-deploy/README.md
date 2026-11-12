@@ -282,8 +282,9 @@ in about two seconds each.
 6. Galleries → look at a student's set, hide the blinks, then publish.
    "Publish everyone who is ready" handles the bulk once you trust the sort.
    **Publishing does not email anyone.**
-7. Email → send the links, or export the CSV and send from the school's mail
-   system.
+7. Email → choose a photo project, select one or more eligible galleries, and
+   preview every student-specific message. Review the saved Ready to Send queue,
+   then use **Send All Ready Emails**. Publishing never sends email.
 
 The floor board on the first screen is one square per student, so you can see
 at a glance who never got photographed while the backdrop is still up.
@@ -328,21 +329,25 @@ actually type, or the links in emails will point at `localhost`.
 
 ## Email
 
-Leave `SMTP_HOST` empty in `.env` and email stays off. That is the sensible
-default for most schools: publish the galleries, export
-`Email → Export links as CSV`, and mail-merge from the account the district
-already approved.
+Administrators can select one, several, or all eligible galleries from an
+active project. Preview creates and saves one message per student without
+contacting the email gateway. Each message contains that student's name,
+project, gallery link, and only that student's valid parent/guardian addresses.
+The Ready to Send queue persists across refreshes; individual messages can be
+removed without clearing the rest.
 
-To send from the app, fill in the SMTP block in `.env`, restart, then use
-Email → Send test before touching real addresses. The subject and body accept
-`{{student}}`, `{{first}}`, `{{school}}`, `{{event}}`, `{{year}}`, `{{link}}`
-and `{{expires}}`.
+**Send All Ready Emails** sends to each guardian address individually so the
+result and any retry are tracked per recipient. Failed or unresolved addresses
+can be retried without resending accepted recipients. An unresolved gateway
+result needs administrator review before retry because acceptance may have
+happened before a connection failed. “Accepted by gateway” does not confirm
+delivery to an inbox. Unpublished, expired, archived, inactive, or invalid
+galleries and missing or invalid addresses are excluded with a reason.
 
-Administrators can also select an active photo project in Email to review its
-eligible recipients, preview a project-specific message and link, and explicitly
-send. Project exports retain the legacy columns and add the project name and
-that student's project gallery URL. Gateway acceptance is not confirmation of
-inbox delivery; publishing never sends email.
+The subject and body accept `{{student}}`, `{{first}}`, `{{school}}`,
+`{{event}}`, `{{year}}`, `{{link}}` and `{{expires}}`. Project exports retain
+the legacy columns and add the project name and that student's project gallery
+URL. Publishing never sends email.
 
 ---
 
