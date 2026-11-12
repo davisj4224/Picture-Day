@@ -16,6 +16,7 @@ const { parse: parseCsv } = require('csv-parse/sync');
 
 const { db, initialize, config, branding, setSetting, newQrCode, newGalleryToken, DEFAULT_BRANDING } = require('./lib/db.js');
 const { requireAdmin } = require('./lib/admin-auth.js');
+const { parentEmailOperationGuard } = require('./lib/parent-email-availability.js');
 const cards = require('./lib/cards.js');
 const mail = require('./lib/mail.js');
 const {
@@ -60,6 +61,7 @@ const {
 } = require('./lib/project-email.js');
 const {
   SENDING_LEASE_MS,
+  historicalProjectEmailState,
   persistProjectEmailPreviews,
   deliverQueueRecipients,
   summarizeQueueRecipients
@@ -204,6 +206,8 @@ app.use((req, res, next) => {
   if (req.get('x-csrf-token') && req.get('x-csrf-token') === req.session.csrf) return next();
   return res.status(403).json({ error: 'Your session expired. Reload the page and sign in again.' });
 });
+
+app.use(parentEmailOperationGuard);
 
 const loginLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
@@ -1452,7 +1456,21 @@ app.post('/api/projects/:id/email/queue/:itemId/remove', requireAdmin, ok(async 
   res.json({ removed: true });
 }));
 
-async function processProjectEmailQueue(projectId, { retry = false, itemId = null } = {}) {
+async function processProjectEmailQueue(projectId, {
+  retry = false,
+  retryUnresolved = false,
+  confirmUnresolved = false,
+  itemId = null
+} = {}) {
+  if (retry && retryUnresolved) {
+    return { status: 400, body: { error: 'Choose either a failed or unresolved retry.' } };
+  }
+  if (retryUnresolved && !confirmUnresolved) {
+    return {
+      status: 400,
+      body: { error: 'Confirm that the gateway may already have accepted this email; retrying may create a duplicate.' }
+    };
+  }
   const project = await db.prepare('SELECT id, name, archived_at FROM projects WHERE id = ?').get(projectId);
   if (!project) return { status: 404, body: { error: 'Project not found.' } };
   if (project.archived_at) return { status: 409, body: { error: 'Archived projects cannot be emailed.' } };
@@ -1470,9 +1488,11 @@ async function processProjectEmailQueue(projectId, { retry = false, itemId = nul
     const expectedEmails = new Set((current?.recipientEmails || []).map((email) => email.toLowerCase()));
     const validLink = current && current.link === item.galleryLink;
     for (const recipient of item.recipients) {
-      const eligibleStatus = retry
-        ? ['failed', 'unresolved'].includes(recipient.status)
-        : recipient.status === 'queued';
+      const eligibleStatus = retryUnresolved
+        ? recipient.status === 'unresolved'
+        : retry
+          ? recipient.status === 'failed'
+          : recipient.status === 'queued';
       if (!eligibleStatus) continue;
       const reason = !current
         ? context.excluded.find((student) => Number(student.student_id) === Number(item.studentId))?.reason ||
@@ -1504,6 +1524,8 @@ async function processProjectEmailQueue(projectId, { retry = false, itemId = nul
     if (!queueRecipients.length) continue;
     const delivered = await deliverQueueRecipients(queueRecipients, {
       retry,
+      retryUnresolved,
+      confirmUnresolved,
       claim: async (recipientId, expectedStatus) => db.transaction(async (tx) => {
         const row = await tx.prepare(
           `SELECT r.status, q.status AS item_status, q.student_id, q.gallery_link
@@ -1540,14 +1562,45 @@ async function processProjectEmailQueue(projectId, { retry = false, itemId = nul
           ).run(exclusionReason, recipientId, expectedStatus);
           return { excluded: true };
         }
+        const queueRecipient = queueRecipients.find((recipient) => Number(recipient.id) === Number(recipientId));
+        const history = await tx.prepare(
+          `SELECT id, attempted_at, status, error_message, outcome, diagnostic_json, message_id
+           FROM gallery_email_attempts
+           WHERE project_id = ? AND student_id = ? AND email_type = 'project-gallery'
+             AND LOWER(recipient_email) = LOWER(?)
+           ORDER BY attempted_at DESC, id DESC`
+        ).all(projectId, row.student_id, queueRecipient.recipient_email);
+        const historicalState = historicalProjectEmailState(history);
+        if (historicalState && historicalState.status !== expectedStatus) {
+          const historicalAttempt = historicalState.attempt;
+          await tx.prepare(
+            `UPDATE project_email_queue_recipients
+             SET status = ?, attempted_at = ?, claimed_at = NULL, error_message = ?,
+               outcome = ?, diagnostic_json = ?, message_id = ?, attempt_id = ?
+             WHERE id = ? AND status = ?`
+          ).run(
+            historicalState.status,
+            historicalAttempt.attempted_at,
+            historicalAttempt.error_message || (historicalState.status === 'unresolved'
+              ? 'A previous delivery attempt has no confirmed outcome.'
+              : null),
+            historicalAttempt.outcome || (historicalState.status === 'accepted' ? 'accepted' : 'unknown'),
+            historicalAttempt.diagnostic_json,
+            historicalAttempt.message_id,
+            historicalAttempt.id,
+            recipientId,
+            expectedStatus
+          );
+          return false;
+        }
         const now = Date.now();
         const attempt = await tx.prepare(
           `INSERT INTO gallery_email_attempts
             (student_id, project_id, recipient_email, email_type, attempted_at, status)
            VALUES (?, ?, ?, 'project-gallery', ?, 'pending')`
-        ).run(queueRecipients.find((recipient) => Number(recipient.id) === Number(recipientId)).student_id,
+        ).run(queueRecipient.student_id,
           projectId,
-          queueRecipients.find((recipient) => Number(recipient.id) === Number(recipientId)).recipient_email,
+          queueRecipient.recipient_email,
           now);
         const updated = await tx.prepare(
           `UPDATE project_email_queue_recipients
@@ -1621,6 +1674,25 @@ app.post('/api/projects/:id/email/queue/:itemId/retry', requireAdmin, ok(async (
     return res.status(400).json({ error: 'Invalid project or queue item ID.' });
   }
   const result = await processProjectEmailQueue(projectId, { retry: true, itemId });
+  return res.status(result.status).json(result.body);
+}));
+
+app.post('/api/projects/:id/email/queue/:itemId/retry-unresolved', requireAdmin, ok(async (req, res) => {
+  const projectId = Number(req.params.id);
+  const itemId = Number(req.params.itemId);
+  if (!Number.isSafeInteger(projectId) || projectId < 1 || !Number.isSafeInteger(itemId) || itemId < 1) {
+    return res.status(400).json({ error: 'Invalid project or queue item ID.' });
+  }
+  if (req.body?.confirmUnresolved !== true) {
+    return res.status(400).json({
+      error: 'Explicitly confirm that the gateway may already have accepted this email and retrying may create a duplicate.'
+    });
+  }
+  const result = await processProjectEmailQueue(projectId, {
+    retryUnresolved: true,
+    confirmUnresolved: true,
+    itemId
+  });
   return res.status(result.status).json(result.body);
 }));
 

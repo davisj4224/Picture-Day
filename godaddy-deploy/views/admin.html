@@ -300,7 +300,8 @@
 
       <div class="card" id="projectEmailCard" hidden>
         <h2>Bulk parent emails</h2>
-        <p class="hint">Select published galleries for one active project. Every preview and email is specific to one student and only that student's parent/guardian addresses. Preview never sends.</p>
+        <p class="hint">Select published galleries for one active project. Every preview and email is specific to one student and only that student's parent/guardian addresses. Preview saves queue records but never sends.</p>
+        <p class="notice">Preview and Published share a database, and this runtime has no built-in Preview/Published marker. Queue changes and email sending are disabled unless the server is configured with <code>PARENT_EMAIL_PUBLISHED_HOST</code> for the exact Published hostname; other hostnames are rejected. Do not configure it unless Preview uses a different hostname.</p>
         <div class="field">
           <label for="projectEmailProject">Photo shoot project</label>
           <select id="projectEmailProject"><option value="">Choose a project…</option></select>
@@ -341,6 +342,7 @@
           </table></div>
         </div>
         <p class="hint">“Accepted by gateway” does not confirm delivery to a recipient's inbox.</p>
+        <p class="hint">Retry failed only retries confirmed rejections. An unresolved gateway attempt may already have been accepted; retrying it can send a duplicate and requires a separate action and confirmation. Accepted recipients are never retried.</p>
         <h3>Recent delivery attempts</h3>
         <div style="overflow-x:auto"><table id="projectEmailHistory">
           <thead><tr><th>Attempted</th><th>Student</th><th>Recipient</th><th>Outcome</th><th>SMTP response / details</th></tr></thead>

@@ -2,6 +2,47 @@
 
 const SENDING_LEASE_MS = 120_000;
 
+function isAcceptedHistoricalAttempt(attempt) {
+  return attempt.outcome === 'accepted' ||
+    (['accepted', 'sent'].includes(attempt.status) && !attempt.outcome);
+}
+
+function historicalProjectEmailState(attempts) {
+  const accepted = attempts.find(isAcceptedHistoricalAttempt);
+  if (accepted) return { status: 'accepted', attempt: accepted };
+
+  const rejected = attempts.find((attempt) => attempt.outcome === 'rejected');
+  const unresolved = attempts.find((attempt) =>
+    !isAcceptedHistoricalAttempt(attempt) && attempt.outcome !== 'rejected'
+  );
+  if (unresolved) return { status: 'unresolved', attempt: unresolved };
+  if (rejected) return { status: 'failed', attempt: rejected };
+  return null;
+}
+
+async function updateQueueRecipientFromHistory(tx, queueItemId, email, state) {
+  if (!state) return;
+  const attempt = state.attempt;
+  await tx.prepare(
+    `UPDATE project_email_queue_recipients
+     SET status = ?, attempted_at = ?, claimed_at = NULL, error_message = ?,
+       outcome = ?, diagnostic_json = ?, message_id = ?, attempt_id = ?
+     WHERE queue_item_id = ? AND LOWER(recipient_email) = LOWER(?) AND status <> 'sending'`
+  ).run(
+    state.status,
+    attempt.attempted_at,
+    attempt.error_message || (state.status === 'unresolved'
+      ? 'A previous delivery attempt has no confirmed outcome.'
+      : null),
+    attempt.outcome || (state.status === 'accepted' ? 'accepted' : 'unknown'),
+    attempt.diagnostic_json,
+    attempt.message_id,
+    attempt.id,
+    queueItemId,
+    email
+  );
+}
+
 async function persistProjectEmailPreviews(db, projectId, previews, now = Date.now()) {
   await db.transaction(async (tx) => {
     for (const preview of previews) {
@@ -25,14 +66,43 @@ async function persistProjectEmailPreviews(db, projectId, previews, now = Date.n
              outcome = IF(status = 'excluded', NULL, outcome),
              status = IF(status = 'excluded', 'queued', status)`
         ).run(item.id, email);
+
+        const history = await tx.prepare(
+          `SELECT id, attempted_at, status, error_message, outcome, diagnostic_json, message_id
+           FROM gallery_email_attempts
+           WHERE project_id = ? AND student_id = ? AND email_type = 'project-gallery'
+             AND LOWER(recipient_email) = LOWER(?)
+           ORDER BY attempted_at DESC, id DESC`
+        ).all(projectId, preview.studentId, email);
+        await updateQueueRecipientFromHistory(
+          tx,
+          item.id,
+          email,
+          historicalProjectEmailState(history)
+        );
       }
     }
   });
   return previews;
 }
 
-async function deliverQueueRecipients(recipients, { retry = false, claim, send, record }) {
-  const eligibleStatuses = retry ? new Set(['failed', 'unresolved']) : new Set(['queued']);
+async function deliverQueueRecipients(recipients, {
+  retry = false,
+  retryUnresolved = false,
+  confirmUnresolved = false,
+  claim,
+  send,
+  record
+}) {
+  if (retry && retryUnresolved) throw new Error('Choose either a failed or unresolved retry.');
+  if (retryUnresolved && !confirmUnresolved) {
+    throw new Error('Retrying unresolved deliveries requires explicit confirmation.');
+  }
+  const eligibleStatuses = retryUnresolved
+    ? new Set(['unresolved'])
+    : retry
+      ? new Set(['failed'])
+      : new Set(['queued']);
   const result = {
     attempted: 0,
     acceptedByGateway: 0,
@@ -91,6 +161,7 @@ function summarizeQueueRecipients(recipients) {
 
 module.exports = {
   SENDING_LEASE_MS,
+  historicalProjectEmailState,
   persistProjectEmailPreviews,
   deliverQueueRecipients,
   summarizeQueueRecipients

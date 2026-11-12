@@ -80,12 +80,25 @@ read a deployed `.env` file.
 | `DB_USER` | Automatically injected by GoDaddy |
 | `DB_PASSWORD` | Automatically injected by GoDaddy |
 | `PICTUREDAY_ASSET_DIR` | Persistent asset root; set to `/private/pictureday` (the production fallback if unset) |
+| `PARENT_EMAIL_PUBLISHED_HOST` | Leave unset to disable parent-email sending and bulk queue changes. Enable only with the exact Published hostname, without scheme or port, after verifying Preview uses a different hostname. |
 
 Keep credentials in the hosting environment settings, never in source control.
 GoDaddy injects the database connection values; the app has no
 SQLite fallback and exits with a clear startup error if MySQL is unavailable.
 The app uses this configured database and `CREATE TABLE IF NOT EXISTS` for its
 first-run schema. Existing tables and records are never dropped or reseeded.
+
+The checked-in GoDaddy workflow deploys one application root, and the existing
+runtime exposes `NODE_ENV` but no Preview/Published marker. Because Preview and
+Published share the database, queue creation, queue cleanup/removal, retry, and
+all email-sending endpoints fail closed unless `PARENT_EMAIL_PUBLISHED_HOST` is
+configured. The server allows those operations only when the request hostname
+matches that exact value. Configure it under cPanel **Setup Node.js App →
+Environment variables** for the Published application only, and only if
+Preview requests arrive with a different hostname. If Preview shares the
+Published hostname or that distinction cannot be verified, leave the setting
+unset; queueing and sending must remain disabled. `NODE_ENV=production` alone
+does not enable these operations or distinguish Preview from Published.
 
 ### Persistent uploaded files
 
@@ -337,12 +350,14 @@ The Ready to Send queue persists across refreshes; individual messages can be
 removed without clearing the rest.
 
 **Send All Ready Emails** sends to each guardian address individually so the
-result and any retry are tracked per recipient. Failed or unresolved addresses
-can be retried without resending accepted recipients. An unresolved gateway
-result needs administrator review before retry because acceptance may have
-happened before a connection failed. “Accepted by gateway” does not confirm
-delivery to an inbox. Unpublished, expired, archived, inactive, or invalid
-galleries and missing or invalid addresses are excluded with a reason.
+result and any retry are tracked per recipient. Historical accepted attempts
+are reconciled into the queue and never queued or retried automatically.
+Ordinary retry targets only confirmed failures. Retrying an unresolved attempt
+requires a separate administrator action and explicit confirmation because the
+gateway may have accepted an email even if the application did not receive its
+response; retrying can create a duplicate. “Accepted by gateway” does not
+confirm delivery to an inbox. Unpublished, expired, archived, inactive, or
+invalid galleries and missing or invalid addresses are excluded with a reason.
 
 The subject and body accept `{{student}}`, `{{first}}`, `{{school}}`,
 `{{event}}`, `{{year}}`, `{{link}}` and `{{expires}}`. Project exports retain

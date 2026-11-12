@@ -1220,7 +1220,8 @@ async function loadProjectEmailQueue() {
               : ''
           }</div>`;
         }).join('');
-        const canRetry = item.counts.failed + item.counts.unresolved > 0;
+        const canRetryFailed = item.counts.failed > 0;
+        const canRetryUnresolved = item.counts.unresolved > 0;
         const canRemove = item.status !== 'sending';
         return `<tr><td>${esc(item.student)}<details>
             <summary>Review saved email</summary>
@@ -1230,7 +1231,8 @@ async function loadProjectEmailQueue() {
           </details></td>
           <td>${recipients || '<span class="hint">No recipients</span>'}</td>
           <td>${esc(item.status)}</td><td>
-            ${canRetry && !projectEmailSending ? `<button class="small" data-project-email-retry="${item.id}">Retry failed / unresolved</button>` : ''}
+            ${canRetryFailed && !projectEmailSending ? `<button class="small" data-project-email-retry="${item.id}">Retry failed only</button>` : ''}
+            ${canRetryUnresolved && !projectEmailSending ? `<button class="small" data-project-email-retry-unresolved="${item.id}">Retry unresolved (may duplicate)</button>` : ''}
             ${canRemove && !projectEmailSending ? `<button class="small" data-project-email-remove="${item.id}">Remove</button>` : ''}
           </td></tr>`;
       }).join('')
@@ -1291,7 +1293,7 @@ $('#previewProjectEmails').addEventListener('click', async () => {
   }
 });
 
-async function runProjectEmailQueueAction(url) {
+async function runProjectEmailQueueAction(url, body = {}) {
   if (projectEmailSending) return;
   const projectId = $('#projectEmailProject').value;
   if (!projectId) return;
@@ -1301,7 +1303,7 @@ async function runProjectEmailQueueAction(url) {
   $('#projectEmailSelectAll').disabled = true;
   $('#projectEmailClearSelection').disabled = true;
   $('#sendProjectEmails').disabled = true;
-  const request = api(url, { method: 'POST', body: {} })
+  const request = api(url, { method: 'POST', body })
     .then((result) => ({ result }), (error) => ({ error }));
   let outcome;
   while (!outcome) {
@@ -1352,6 +1354,7 @@ $('#sendProjectEmails').addEventListener('click', () => {
 $('#projectEmailQueue').addEventListener('click', async (event) => {
   const remove = event.target.closest('button[data-project-email-remove]');
   const retry = event.target.closest('button[data-project-email-retry]');
+  const retryUnresolved = event.target.closest('button[data-project-email-retry-unresolved]');
   const projectId = $('#projectEmailProject').value;
   if (!projectId) return;
   if (remove) {
@@ -1361,8 +1364,15 @@ $('#projectEmailQueue').addEventListener('click', async (event) => {
     } catch (error) { toast(error.message, 'bad'); }
   }
   if (retry) {
-    if (!confirm('Retry only failed or unresolved recipients for this student? Successful recipients will not be sent again.')) return;
+    if (!confirm('Retry only recipients with a confirmed failure for this student? Accepted and unresolved recipients will not be sent again.')) return;
     runProjectEmailQueueAction(`/api/projects/${projectId}/email/queue/${retry.dataset.projectEmailRetry}/retry`);
+  }
+  if (retryUnresolved) {
+    if (!confirm('The email gateway may have accepted this email even though the application did not receive its response. Retrying may send a duplicate. Retry this unresolved recipient anyway?')) return;
+    runProjectEmailQueueAction(
+      `/api/projects/${projectId}/email/queue/${retryUnresolved.dataset.projectEmailRetryUnresolved}/retry-unresolved`,
+      { confirmUnresolved: true }
+    );
   }
 });
 

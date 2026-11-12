@@ -45,9 +45,10 @@ function harness(initialRecipients, initialFailures = new Map()) {
   };
 }
 
-test('persisting previews creates one saved, student-specific queue item without a delivery dependency', async () => {
+function persistenceHarness(initialAttempts = []) {
   const items = new Map();
   const recipients = [];
+  const attempts = initialAttempts.map((attempt) => ({ ...attempt }));
   const db = {
     async transaction(callback) {
       return callback({
@@ -65,23 +66,55 @@ test('persisting previews creates one saved, student-specific queue item without
                   body: values[3],
                   galleryLink: values[4]
                 });
-              } else {
+              } else if (sql.includes('INSERT INTO project_email_queue_recipients')) {
                 const [queueItemId, email] = values;
                 const existing = recipients.find((recipient) =>
-                  recipient.queueItemId === queueItemId && recipient.email === email
+                  recipient.queueItemId === queueItemId &&
+                  recipient.email.toLowerCase() === email.toLowerCase()
                 );
                 if (!existing) recipients.push({ queueItemId, email, status: 'queued' });
                 else if (existing.status === 'excluded') existing.status = 'queued';
+              } else if (sql.includes('UPDATE project_email_queue_recipients')) {
+                const [status, attemptedAt, error, outcome, diagnostics, messageId, attemptId, queueItemId, email] = values;
+                const recipient = recipients.find((item) =>
+                  item.queueItemId === queueItemId &&
+                  item.email.toLowerCase() === email.toLowerCase()
+                );
+                if (recipient && recipient.status !== 'sending') {
+                  Object.assign(recipient, {
+                    status,
+                    attemptedAt,
+                    error,
+                    outcome,
+                    diagnostics,
+                    messageId,
+                    attemptId
+                  });
+                }
               }
             },
             async get(projectId, studentId) {
               return items.get(`${projectId}:${studentId}`);
+            },
+            async all(projectId, studentId, email) {
+              if (!sql.includes('FROM gallery_email_attempts')) return [];
+              return attempts.filter((attempt) =>
+                attempt.projectId === projectId &&
+                attempt.studentId === studentId &&
+                attempt.emailType === 'project-gallery' &&
+                attempt.recipientEmail.toLowerCase() === email.toLowerCase()
+              );
             }
           };
         }
       });
     }
   };
+  return { db, items, recipients, attempts };
+}
+
+test('persisting previews creates one saved, student-specific queue item without a delivery dependency', async () => {
+  const { db, items, recipients } = persistenceHarness();
   const previews = [
     { studentId: 12, subject: 'Student 12', text: 'Gallery 12', galleryLink: '/p/12',
       recipientEmails: ['parent12@example.test', 'guardian12@example.test'] },
@@ -105,6 +138,50 @@ test('persisting previews creates one saved, student-specific queue item without
   assert.equal(items.size, 2, 're-preview updates the existing gallery queue items');
   assert.equal(recipients[0].status, 'accepted', 're-preview never resets an accepted recipient');
   assert.equal(recipients[1].status, 'queued', 'a newly eligible excluded recipient can be queued again');
+});
+
+test('preview reconciles historical accepted, rejected, and uncertain attempts without changing history', async () => {
+  const attempts = [
+    { id: 25, projectId: 8, studentId: 12, recipientEmail: 'parent12@example.test', emailType: 'project-gallery',
+      attempted_at: 130, status: 'unresolved', outcome: 'unknown', error_message: 'Later timeout',
+      diagnostic_json: '{"outcome":"unknown"}', message_id: null },
+    { id: 21, projectId: 8, studentId: 12, recipientEmail: 'parent12@example.test', emailType: 'project-gallery',
+      attempted_at: 100, status: 'sent', outcome: 'accepted', error_message: null,
+      diagnostic_json: '{"outcome":"accepted"}', message_id: 'accepted-21' },
+    { id: 22, projectId: 8, studentId: 12, recipientEmail: 'failed12@example.test', emailType: 'project-gallery',
+      attempted_at: 110, status: 'failed', outcome: 'rejected', error_message: 'SMTP rejected',
+      diagnostic_json: '{"outcome":"rejected"}', message_id: null },
+    { id: 23, projectId: 8, studentId: 12, recipientEmail: 'unknown12@example.test', emailType: 'project-gallery',
+      attempted_at: 120, status: 'unresolved', outcome: 'unknown', error_message: 'No gateway response',
+      diagnostic_json: '{"outcome":"unknown"}', message_id: null },
+    { id: 24, projectId: 8, studentId: 12, recipientEmail: 'legacy12@example.test', emailType: 'project-gallery',
+      attempted_at: 90, status: 'failed', outcome: null, error_message: null,
+      diagnostic_json: null, message_id: null }
+  ];
+  const originalAttempts = structuredClone(attempts);
+  const store = persistenceHarness(attempts);
+  const previews = [{
+    studentId: 12,
+    subject: 'Student 12',
+    text: 'Gallery 12',
+    galleryLink: '/p/12',
+    recipientEmails: [
+      'PARENT12@example.test',
+      'failed12@example.test',
+      'unknown12@example.test',
+      'legacy12@example.test'
+    ]
+  }];
+
+  await persistProjectEmailPreviews(store.db, 8, previews, 130);
+
+  assert.deepEqual(store.recipients.map(({ email, status, attemptId }) => ({ email, status, attemptId })), [
+    { email: 'PARENT12@example.test', status: 'accepted', attemptId: 21 },
+    { email: 'failed12@example.test', status: 'failed', attemptId: 22 },
+    { email: 'unknown12@example.test', status: 'unresolved', attemptId: 23 },
+    { email: 'legacy12@example.test', status: 'unresolved', attemptId: 24 }
+  ]);
+  assert.deepEqual(store.attempts, originalAttempts, 'historical attempt records remain unchanged');
 });
 
 test('Send All processes every queued student email to that student’s guardian group only', async () => {
@@ -131,7 +208,7 @@ test('Send All processes every queued student email to that student’s guardian
   assert.equal(queue.sent[0].body.includes('/p/student-13'), false);
 });
 
-test('repeated Send All claims no successful address twice and retry targets only failures', async () => {
+test('Send All and ordinary retry never retry unresolved or accepted addresses', async () => {
   const rows = [
     { id: 1, student_id: 12, recipient_email: 'parent12@example.test', status: 'queued',
       subject: 'Student 12', body: 'Gallery 12', gallery_link: '/p/12' },
@@ -152,8 +229,21 @@ test('repeated Send All claims no successful address twice and retry targets onl
 
   queue.failures.clear();
   const retried = await deliverQueueRecipients(queue.recipients, { ...queue, retry: true });
-  assert.equal(retried.attempted, 2);
-  assert.equal(retried.acceptedByGateway, 2);
+  assert.equal(retried.attempted, 1);
+  assert.equal(retried.acceptedByGateway, 1);
+  assert.deepEqual(queue.recipients.map((recipient) => recipient.status), ['accepted', 'accepted', 'unresolved']);
+
+  await assert.rejects(
+    deliverQueueRecipients(queue.recipients, { ...queue, retryUnresolved: true }),
+    /explicit confirmation/
+  );
+  const unresolvedRetry = await deliverQueueRecipients(queue.recipients, {
+    ...queue,
+    retryUnresolved: true,
+    confirmUnresolved: true
+  });
+  assert.equal(unresolvedRetry.attempted, 1);
+  assert.equal(unresolvedRetry.acceptedByGateway, 1);
   assert.deepEqual(queue.sent.map((message) => message.to), [
     'parent12@example.test',
     'guardian12@example.test',
