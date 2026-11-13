@@ -114,6 +114,7 @@ function galleryLink(token, publicUrl) {
 
 module.exports = {
   LEGACY_GALLERY_NAME,
+  validGalleryToken,
   publishStudentRecord,
   galleryStudentByToken,
   galleryTokenHealth,

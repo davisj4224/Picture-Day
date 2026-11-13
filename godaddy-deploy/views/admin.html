@@ -277,7 +277,7 @@
       <div class="card" id="galleryEmailHistory" hidden>
         <h2>Email status and history</h2>
         <p id="galleryEmailSummary" class="notice" role="status" aria-live="polite"></p>
-        <p class="hint">“Accepted by GoDaddy” means the email was accepted by the GoDaddy email gateway; it does not confirm delivery to the recipient's inbox.</p>
+        <p class="hint">An SMTP acceptance confirms the server accepted the message, but not that it reached the recipient's inbox.</p>
         <p id="galleryEmailRecipient" class="hint"></p>
         <div style="overflow-x:auto"><table>
           <thead><tr><th>Attempted</th><th>Recipient</th><th>Status</th><th>Failure reason</th></tr></thead>
@@ -291,50 +291,26 @@
       <div class="head">
         <div>
           <h1>Email</h1>
-          <p>Select a photo project to review its published galleries, preview messages, and send parent links.</p>
+          <p>Send the private links, or export them and send from the school's own mail system.</p>
         </div>
-        <a class="btn small" id="legacyEmailExport" href="/api/email/export.csv">Export legacy links as CSV</a>
+        <a class="btn small" id="emailExport" href="/api/email/export.csv">Export links as CSV</a>
       </div>
 
       <div class="notice" id="emailNotice" hidden></div>
 
-      <div class="card" id="projectEmailCard" hidden>
+      <div class="card">
         <h2>Ready to send</h2>
-        <p class="hint">Select published galleries for one project. Preview does not send email.</p>
+        <p class="hint">Published galleries whose family has not been emailed yet.</p>
         <div class="field">
-          <label for="projectEmailProject">Project</label>
-          <select id="projectEmailProject"><option value="">Choose a project…</option></select>
+          <label for="emailProject">Project</label>
+          <select id="emailProject"><option value="legacy">Original Picture Day</option></select>
         </div>
-        <a class="btn small" id="projectEmailExport" hidden>Export this project's links as CSV</a>
-        <p class="hint" id="projectEmailStatus" role="status" aria-live="polite"></p>
-        <div style="overflow-x:auto"><table id="projectEmailRecipients">
-          <thead><tr><th>Select</th><th>Student</th><th>Parent email</th></tr></thead>
-          <tbody><tr><td colspan="3" class="hint">Choose a project to see eligible galleries.</td></tr></tbody>
-        </table></div>
-        <div class="row" style="margin-top:12px">
-          <button id="projectEmailSelectAll">Select all</button>
-          <button id="projectEmailClearSelection">Clear selection</button>
-          <button id="previewProjectEmails">Preview selected</button>
-          <span class="hint" id="projectEmailCount" style="margin:0" aria-live="polite"></span>
-        </div>
-        <div id="projectEmailPreview" hidden style="margin-top:16px">
-          <h3>Email preview</h3>
-          <pre id="projectEmailPreviewList" class="notice" style="white-space:pre-wrap"></pre>
-        </div>
-        <div class="row" style="margin-top:16px">
-          <button class="primary" id="sendProjectEmails" disabled>Send to selected</button>
-        </div>
-      </div>
-
-      <div class="card" id="legacyEmailCard">
-        <h2>Original Picture Day legacy galleries</h2>
-        <p class="hint">This separate sender is only for the original, non-project galleries.</p>
         <div style="overflow-x:auto"><table id="pendingTable">
           <thead><tr><th><input type="checkbox" id="pendAll" style="width:auto"></th><th>Student</th><th>Grade</th><th>Parent email</th></tr></thead>
           <tbody></tbody>
         </table></div>
         <div class="row" style="margin-top:12px">
-          <button class="primary" id="sendEmails">Send selected legacy gallery links</button>
+          <button class="primary" id="sendEmails">Send to selected</button>
           <span class="hint" id="pendCount" style="margin:0"></span>
         </div>
       </div>

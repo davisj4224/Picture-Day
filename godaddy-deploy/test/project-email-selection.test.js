@@ -4,55 +4,126 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { test } = require('node:test');
+const {
+  parseEmailProjectId,
+  loadEmailRows,
+  emailTemplateVariables
+} = require('../lib/email-workflow');
 
-async function loadSelectionGuard() {
-  return import('../public/project-email-selection.mjs');
+const root = path.join(__dirname, '..');
+const adminHtml = fs.readFileSync(path.join(root, 'views', 'admin.html'), 'utf8');
+const adminJs = fs.readFileSync(path.join(root, 'public', 'admin.js'), 'utf8');
+const serverJs = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+
+function fakeEmailDb() {
+  const queries = [];
+  const project = { id: 23, name: 'Spring Portraits', archived_at: null };
+  const legacyStudent = {
+    id: 11,
+    first_name: 'Legacy',
+    last_name: 'Student',
+    parent_email: 'legacy-parent@example.test',
+    gallery_token: 'l'.repeat(32),
+    expires_at: null
+  };
+  const projectStudent = {
+    id: 22,
+    first_name: 'Project',
+    last_name: 'Student',
+    parent_email: 'project-parent@example.test',
+    project_gallery_token: 'p'.repeat(32),
+    project_expires_at: null,
+    project_name: project.name
+  };
+
+  return {
+    queries,
+    legacyStudent,
+    projectStudent,
+    prepare(sql) {
+      return {
+        async get(...params) {
+          queries.push({ kind: 'get', sql, params });
+          return sql.includes('FROM projects') ? project : null;
+        },
+        async all(...params) {
+          queries.push({ kind: 'all', sql, params });
+          if (sql.includes('FROM students s')) return [legacyStudent];
+          if (sql.includes('FROM project_students ps')) return [projectStudent];
+          throw new Error('Unexpected email query');
+        }
+      };
+    }
+  };
 }
 
-test('Email keeps a simple project select, recipient, preview, and send workflow', () => {
-  const html = fs.readFileSync(path.join(__dirname, '..', 'views', 'admin.html'), 'utf8');
-  const adminJs = fs.readFileSync(path.join(__dirname, '..', 'public', 'admin.js'), 'utf8');
-  const section = html.slice(html.indexOf('id="view-email"'), html.indexOf('id="view-settings"'));
+test('Email restores the launch layout with one default Original Picture Day selector', () => {
+  const section = adminHtml.slice(adminHtml.indexOf('id="view-email"'), adminHtml.indexOf('id="view-settings"'));
 
-  assert.match(section, /id="projectEmailProject"/);
-  assert.match(section, /id="projectEmailRecipients"/);
-  assert.match(section, /id="previewProjectEmails"/);
-  assert.match(section, /id="sendProjectEmails"/);
-  assert.match(adminJs, /projectEmailPreview\.previews\[0\]/);
-  assert.doesNotMatch(adminJs, /projectEmailPreview\.previews\.map/);
-  assert.doesNotMatch(section, /projectEmailQueue|queue-management|PARENT_EMAIL_PUBLISHED_HOST/);
-  assert.doesNotMatch(section, /Recent delivery attempts|SMTP response \/ details|Excluded galleries/);
+  assert.match(section, /<select id="emailProject"><option value="legacy">Original Picture Day<\/option>/);
+  assert.match(section, /id="pendingTable"/);
+  assert.match(section, /id="pendAll"/);
+  assert.match(section, /id="sendEmails">Send to selected/);
+  assert.match(section, /id="emSubject"/);
+  assert.match(section, /id="emBody"/);
+  assert.match(section, /id="saveEmail"/);
+  assert.match(section, /id="sendTest"/);
+  assert.doesNotMatch(section, /projectEmail|Preview selected|queue|delivery attempts|SMTP response/);
+  assert.match(adminJs, /api\(`\/api\/email\/pending\?projectId=\$\{encodeURIComponent\(projectId\)\}`\)/);
+  assert.match(adminJs, /body: \{ ids, projectId \}/);
+  assert.doesNotMatch(adminJs, /\/api\/projects\/\$\{projectId\}\/email\/(recipients|preview|send)/);
 });
 
-test('a late project response cannot update the newly selected project', async () => {
-  const { createProjectEmailSelectionGuard } = await loadSelectionGuard();
-  const guard = createProjectEmailSelectionGuard();
-  const previousProject = guard.begin(8);
-  const currentProject = guard.begin(9);
+test('Original Picture Day selection returns only legacy galleries and uses legacy gallery links', async () => {
+  assert.equal(parseEmailProjectId(undefined), null);
+  assert.equal(parseEmailProjectId('legacy'), null);
+  const db = fakeEmailDb();
+  const rows = await loadEmailRows(db, parseEmailProjectId('legacy'));
+  const query = db.queries.find((entry) => entry.kind === 'all');
 
-  assert.equal(guard.isCurrent(previousProject, 9), false);
-  assert.equal(guard.isCurrent(currentProject, 9), true);
-  assert.equal(guard.isCurrent(currentProject, 8), false);
+  assert.deepEqual(rows, [db.legacyStudent]);
+  assert.match(query.sql, /ph\.project_id IS NULL/);
+  assert.match(query.sql, /email_log e/);
+  assert.deepEqual(query.params, []);
+
+  const variables = emailTemplateVariables(
+    db.legacyStudent,
+    null,
+    { schoolName: 'Test School', eventName: 'Picture Day', year: '2026' },
+    'https://photos.example.test/'
+  );
+  assert.equal(variables.link, `https://photos.example.test/g/${'l'.repeat(32)}`);
+  assert.equal(variables.event, 'Picture Day');
 });
 
-test('clearing the project selection invalidates responses already in flight', async () => {
-  const { createProjectEmailSelectionGuard } = await loadSelectionGuard();
-  const guard = createProjectEmailSelectionGuard();
-  const pendingRequest = guard.begin(8);
-  guard.begin('');
+test('selecting a newer project returns its own galleries, recipients, and project links', async () => {
+  const db = fakeEmailDb();
+  const now = 1763000000000;
+  const rows = await loadEmailRows(db, 23, { now });
+  const query = db.queries.find((entry) => entry.kind === 'all');
 
-  assert.equal(guard.isCurrent(pendingRequest, ''), false);
+  assert.deepEqual(rows, [db.projectStudent]);
+  assert.match(query.sql, /FROM project_students ps/);
+  assert.match(query.sql, /ph\.project_id = ps\.project_id/);
+  assert.match(query.sql, /gallery_email_attempts a/);
+  assert.deepEqual(query.params, [23, now]);
+  assert.equal(parseEmailProjectId('23'), 23);
+  assert.equal(parseEmailProjectId('0'), undefined);
+
+  const variables = emailTemplateVariables(
+    db.projectStudent,
+    23,
+    { schoolName: 'Test School', eventName: 'Picture Day', year: '2026' },
+    'https://photos.example.test'
+  );
+  assert.equal(variables.link, `https://photos.example.test/p/${'p'.repeat(32)}`);
+  assert.equal(variables.event, 'Spring Portraits');
 });
 
-test('email project options include the original archived project and every newer project', async () => {
-  const { projectEmailOptions } = await loadSelectionGuard();
-  const projects = projectEmailOptions([
-    { id: 1, name: 'Original Picture Day Project', archived_at: 1 },
-    { id: 2, name: 'Fall Pictures', archived_at: null },
-    { id: 3, name: 'Spring Pictures', archived_at: null }
-  ]);
-
-  assert.deepEqual(projects.map(({ id }) => id), [1, 2, 3]);
-  assert.equal(projects[0].displayName, 'Original Picture Day Project (Archived)');
-  assert.equal(projects[1].displayName, 'Fall Pictures');
+test('pending API and send API retain the original endpoints while carrying selected project context', () => {
+  assert.match(serverJs, /app\.get\('\/api\/email\/pending'/);
+  assert.match(serverJs, /app\.post\([\s\S]*?'\/api\/email\/send'/);
+  assert.match(serverJs, /parseEmailProjectId\(req\.query\.projectId\)/);
+  assert.match(serverJs, /parseEmailProjectId\(req\.body\?\.projectId\)/);
+  assert.match(serverJs, /emailTemplateVariables\(student, projectId/);
 });
