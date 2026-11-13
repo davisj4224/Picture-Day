@@ -33,9 +33,6 @@ const me = await session();
 if (!me.user || !['staff', 'admin'].includes(me.user.role)) location.href = '/login';
 if (me.user.role !== 'admin') $('#staffAccountsCard').hidden = true;
 $('#createProjectCard').hidden = me.user.role !== 'admin';
-$('#projectEmailCard').hidden = me.user.role !== 'admin';
-$('#legacyEmailCard').hidden = me.user.role === 'admin';
-$('#legacyEmailExport').hidden = me.user.role === 'admin';
 $('#who').textContent = `Signed in as ${me.user.username}`;
 state.config = me.config || {};
 
