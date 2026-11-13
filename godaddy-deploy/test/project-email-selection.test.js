@@ -135,4 +135,5 @@ test('pending API and send API retain the original endpoints while carrying sele
   assert.match(serverJs, /parseEmailProjectId\(req\.query\.projectId\)/);
   assert.match(serverJs, /parseEmailProjectId\(req\.body\?\.projectId\)/);
   assert.match(serverJs, /emailTemplateVariables\(student, projectId/);
+  assert.match(serverJs, /to: recipient\.recipient_email,\s*from: cfg\.emailFrom,/);
 });

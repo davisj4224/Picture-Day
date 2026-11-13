@@ -2,6 +2,7 @@
 
 const EMAIL_GATEWAY_URL = 'http://127.0.0.1:2525/api/email/send';
 const REQUEST_TIMEOUT_MS = 30000;
+const DEFAULT_FROM = 'Picture Day <support@calcharterpicts.org>';
 
 function render(template, vars) {
   return String(template || '').replace(/\{\{(\w+)\}\}/g, (_, key) =>
@@ -45,11 +46,12 @@ function gatewayError(message, outcome, diagnostics = {}) {
   return error;
 }
 
-async function send({ to, subject, text, link, replyTo, palette }) {
+async function send({ to, subject, text, link, from, replyTo, palette }) {
   const payload = {
     to: toArray(to),
     subject,
     text,
+    from: typeof from === 'string' && from.trim() ? from.trim() : DEFAULT_FROM,
     html: toHtml(text, link, palette)
   };
   if (replyTo) payload.replyTo = replyTo;

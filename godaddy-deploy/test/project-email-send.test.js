@@ -121,6 +121,7 @@ function sendOptions(db, send, projectId = 8, studentIds = [12]) {
     emailConfig: {
       emailSubject: 'Photos for {{student}}',
       emailBody: 'Hello {{first}}. {{link}}',
+      emailFrom: 'Picture Day <support@calcharterpicts.org>',
       emailReplyTo: 'office@example.test'
     },
     branding: { schoolName: 'North School', year: '2026', palette: { primary: '#123456' } },
@@ -148,6 +149,7 @@ test('project send isolates memberships and records each parent address with the
 
   assert.equal(result.acceptedByGateway, 2);
   assert.deepEqual(sent.map((message) => message.to), ['parent@example.test', 'guardian@example.test']);
+  assert.ok(sent.every((message) => message.from === 'Picture Day <support@calcharterpicts.org>'));
   assert.ok(sent.every((message) => message.link === `https://photos.example.test/p/${TOKEN_ONE}`));
   assert.ok(sent.every((message) => message.text.includes(`https://photos.example.test/p/${TOKEN_ONE}`)));
   assert.ok(sent.every((message) => message.subject.includes('Winter Pictures')));

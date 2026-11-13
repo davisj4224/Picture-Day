@@ -105,6 +105,7 @@ async function sendProjectEmailRecipients({
       try {
         const delivery = await mailer.send({
           to: recipientEmail,
+          from: emailConfig.emailFrom,
           subject: rendered.subject,
           text: rendered.text,
           link: rendered.link,

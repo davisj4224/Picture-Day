@@ -1659,6 +1659,7 @@ async function processProjectEmailQueue(projectId, {
       send: (recipient) => {
         return mail.send({
           to: recipient.recipient_email,
+          from: cfg.emailFrom,
           subject: recipient.subject,
           text: recipient.body,
           link: recipient.gallery_link,

@@ -34,7 +34,7 @@ test('GoDaddy gateway sends the rendered message without SMTP configuration', as
 
   const result = await mail.send({
     to: 'parent@example.test',
-    from: 'Picture Day <photos@example.test>',
+    from: 'Picture Day <support@calcharterpicts.org>',
     replyTo: 'office@example.test',
     subject: 'Photos for Sample',
     text: 'Hello Sample\n\nhttps://photos.example.test/g/gallery-token',
@@ -53,11 +53,11 @@ test('GoDaddy gateway sends the rendered message without SMTP configuration', as
     to: ['parent@example.test'],
     subject: 'Photos for Sample',
     text: 'Hello Sample\n\nhttps://photos.example.test/g/gallery-token',
+    from: 'Picture Day <support@calcharterpicts.org>',
     html: undefined,
     replyTo: 'office@example.test'
   });
   assert.match(payload.html, /https:\/\/photos\.example\.test\/g\/gallery-token/);
-  assert.doesNotMatch(request[1].body, /photos@example\.test/);
   assert.deepEqual(result, {
     messageId: 'gateway-message-id',
     outcome: 'accepted',
@@ -80,6 +80,7 @@ test('gateway accepts an array of recipients and omits an empty reply-to', async
   });
 
   assert.deepEqual(payload.to, ['one@example.test', 'two@example.test']);
+  assert.equal(payload.from, 'Picture Day <support@calcharterpicts.org>');
   assert.equal(Object.hasOwn(payload, 'replyTo'), false);
 });
 
