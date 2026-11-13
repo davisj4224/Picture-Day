@@ -291,17 +291,17 @@
       <div class="head">
         <div>
           <h1>Email</h1>
-          <p>Send the private links, or export the full roster and parent emails. Gallery links appear after publishing.</p>
+          <p>Select a photo project to review its published galleries, preview messages, and send parent links.</p>
         </div>
-        <a class="btn small" href="/api/email/export.csv">Export links as CSV</a>
+        <a class="btn small" id="legacyEmailExport" href="/api/email/export.csv">Export legacy links as CSV</a>
       </div>
 
       <div class="notice" id="emailNotice" hidden></div>
 
       <div class="card" id="projectEmailCard" hidden>
-        <h2>Bulk parent emails</h2>
-        <p class="hint">Select published galleries for one active project. Every preview and email is specific to one student and only that student's parent/guardian addresses. Preview saves queue records but never sends.</p>
-        <p class="notice">Preview and Published share a database, and this runtime has no built-in Preview/Published marker. Queue changes and email sending are disabled unless the server is configured with <code>PARENT_EMAIL_PUBLISHED_HOST</code> for the exact Published hostname; other hostnames are rejected. Do not configure it unless Preview uses a different hostname.</p>
+        <h2>Project parent emails</h2>
+        <p class="hint">Select published galleries for one active project. Every preview and email uses that project's gallery link and only that student's parent/guardian addresses.</p>
+        <p class="notice">Preview and Published share a database, and this runtime has no built-in Preview/Published marker. Project email preview and sending are disabled unless the server is configured with <code>PARENT_EMAIL_PUBLISHED_HOST</code> for the exact Published hostname; other hostnames are rejected. Do not configure it unless Preview uses a different hostname.</p>
         <div class="field">
           <label for="projectEmailProject">Photo shoot project</label>
           <select id="projectEmailProject"><option value="">Choose a project…</option></select>
@@ -329,20 +329,12 @@
           <h3>Preview each student email</h3>
           <div id="projectEmailPreviewList"></div>
         </div>
-        <div class="card" style="margin-top:16px">
-          <h3>Ready to Send</h3>
-          <p class="hint">This queue is saved and stays available after refresh. Removing one email does not affect the others.</p>
-          <div class="row">
-            <button class="primary" id="sendProjectEmails" disabled>Send All Ready Emails</button>
-            <span class="hint" id="projectEmailProgress" role="status" aria-live="polite" style="margin:0"></span>
-          </div>
-          <div style="overflow-x:auto;margin-top:12px"><table id="projectEmailQueue">
-            <thead><tr><th>Student</th><th>Recipients and individual outcomes</th><th>Status</th><th></th></tr></thead>
-            <tbody><tr><td colspan="4" class="hint">Choose a project to load its saved queue.</td></tr></tbody>
-          </table></div>
+        <div class="row" style="margin-top:16px">
+          <button class="primary" id="sendProjectEmails" disabled>Send selected</button>
+          <span class="hint" id="projectEmailProgress" role="status" aria-live="polite" style="margin:0"></span>
         </div>
         <p class="hint">“Accepted by gateway” does not confirm delivery to a recipient's inbox.</p>
-        <p class="hint">Retry failed only retries confirmed rejections. An unresolved gateway attempt may already have been accepted; retrying it can send a duplicate and requires a separate action and confirmation. Accepted recipients are never retried.</p>
+        <p class="hint">Accepted, pending, and unresolved addresses are not sent again. Selecting a confirmed rejection explicitly retries that address.</p>
         <h3>Recent delivery attempts</h3>
         <div style="overflow-x:auto"><table id="projectEmailHistory">
           <thead><tr><th>Attempted</th><th>Student</th><th>Recipient</th><th>Outcome</th><th>SMTP response / details</th></tr></thead>
@@ -350,7 +342,7 @@
         </table></div>
       </div>
 
-      <div class="card">
+      <div class="card" id="legacyEmailCard">
         <h2>Original Picture Day legacy galleries</h2>
         <p class="hint">This separate sender is only for the original, non-project galleries.</p>
         <div style="overflow-x:auto"><table id="pendingTable">

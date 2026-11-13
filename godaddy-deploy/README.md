@@ -80,7 +80,7 @@ read a deployed `.env` file.
 | `DB_USER` | Automatically injected by GoDaddy |
 | `DB_PASSWORD` | Automatically injected by GoDaddy |
 | `PICTUREDAY_ASSET_DIR` | Persistent asset root; set to `/private/pictureday` (the production fallback if unset) |
-| `PARENT_EMAIL_PUBLISHED_HOST` | Leave unset to disable parent-email sending and bulk queue changes. Enable only with the exact Published hostname, without scheme or port, after verifying Preview uses a different hostname. |
+| `PARENT_EMAIL_PUBLISHED_HOST` | Leave unset to disable parent-email sending and preview. Enable only with the exact Published hostname, without scheme or port, after verifying Preview uses a different hostname. |
 
 Keep credentials in the hosting environment settings, never in source control.
 GoDaddy injects the database connection values; the app has no
@@ -90,14 +90,14 @@ first-run schema. Existing tables and records are never dropped or reseeded.
 
 The checked-in GoDaddy workflow deploys one application root, and the existing
 runtime exposes `NODE_ENV` but no Preview/Published marker. Because Preview and
-Published share the database, queue creation, queue cleanup/removal, retry, and
-all email-sending endpoints fail closed unless `PARENT_EMAIL_PUBLISHED_HOST` is
+Published share the database, project email preview and sending and all other
+email-sending endpoints fail closed unless `PARENT_EMAIL_PUBLISHED_HOST` is
 configured. The server allows those operations only when the request hostname
 matches that exact value. Configure it under cPanel **Setup Node.js App →
 Environment variables** for the Published application only, and only if
 Preview requests arrive with a different hostname. If Preview shares the
 Published hostname or that distinction cannot be verified, leave the setting
-unset; queueing and sending must remain disabled. `NODE_ENV=production` alone
+unset; preview and sending must remain disabled. `NODE_ENV=production` alone
 does not enable these operations or distinguish Preview from Published.
 
 ### Persistent uploaded files
@@ -296,8 +296,9 @@ in about two seconds each.
    "Publish everyone who is ready" handles the bulk once you trust the sort.
    **Publishing does not email anyone.**
 7. Email → choose a photo project, select one or more eligible galleries, and
-   preview every student-specific message. Review the saved Ready to Send queue,
-   then use **Send All Ready Emails**. Publishing never sends email.
+   preview every student-specific message. Then use **Send selected**.
+   Accepted, pending, and unresolved addresses are not sent again; an explicit
+   selection may retry a confirmed rejection. Publishing never sends email.
 
 The floor board on the first screen is one square per student, so you can see
 at a glance who never got photographed while the backdrop is still up.
@@ -342,22 +343,21 @@ actually type, or the links in emails will point at `localhost`.
 
 ## Email
 
-Administrators can select one, several, or all eligible galleries from an
-active project. Preview creates and saves one message per student without
-contacting the email gateway. Each message contains that student's name,
-project, gallery link, and only that student's valid parent/guardian addresses.
-The Ready to Send queue persists across refreshes; individual messages can be
-removed without clearing the rest.
+Administrators select one active project, then select eligible galleries and
+preview each student-specific message before using **Send selected**. Preview
+does not contact the gateway or create queue records. Each message contains
+that student's name, the selected project's gallery link, and only that
+student's valid parent/guardian addresses. Delivery attempts are recorded in
+project-specific history.
 
-**Send All Ready Emails** sends to each guardian address individually so the
-result and any retry are tracked per recipient. Historical accepted attempts
-are reconciled into the queue and never queued or retried automatically.
-Ordinary retry targets only confirmed failures. Retrying an unresolved attempt
-requires a separate administrator action and explicit confirmation because the
-gateway may have accepted an email even if the application did not receive its
-response; retrying can create a duplicate. “Accepted by gateway” does not
-confirm delivery to an inbox. Unpublished, expired, archived, inactive, or
-invalid galleries and missing or invalid addresses are excluded with a reason.
+Each guardian address is sent individually. Accepted, pending, and unresolved
+attempts are not automatically resent; an explicitly selected confirmed
+rejection may be retried. An unresolved gateway result remains unknown and is
+not retried because the gateway may already have accepted the email. “Accepted
+by gateway” does not confirm delivery to an inbox. Unpublished, expired,
+archived, inactive, or invalid galleries and missing or invalid addresses are
+excluded with a reason. Existing queue tables and records are retained for
+history, but the queue interface and queue send/retry endpoints are retired.
 
 The subject and body accept `{{student}}`, `{{first}}`, `{{school}}`,
 `{{event}}`, `{{year}}`, `{{link}}` and `{{expires}}`. Project exports retain
