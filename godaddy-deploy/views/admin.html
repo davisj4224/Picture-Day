@@ -299,7 +299,8 @@
       <div class="notice" id="emailNotice" hidden></div>
 
       <div class="card" id="projectEmailCard" hidden>
-        <h2>Parent emails</h2>
+        <h2>Ready to send</h2>
+        <p class="hint">Select published galleries for one project. Preview does not send email.</p>
         <div class="field">
           <label for="projectEmailProject">Project</label>
           <select id="projectEmailProject"><option value="">Choose a project…</option></select>
@@ -307,22 +308,21 @@
         <a class="btn small" id="projectEmailExport" hidden>Export this project's links as CSV</a>
         <p class="hint" id="projectEmailStatus" role="status" aria-live="polite"></p>
         <div style="overflow-x:auto"><table id="projectEmailRecipients">
-          <thead><tr><th>Select</th><th>Student / gallery</th><th>Parent/guardian addresses</th></tr></thead>
+          <thead><tr><th>Select</th><th>Student</th><th>Parent email</th></tr></thead>
           <tbody><tr><td colspan="3" class="hint">Choose a project to see eligible galleries.</td></tr></tbody>
         </table></div>
         <div class="row" style="margin-top:12px">
-          <button id="projectEmailSelectAll">Select All</button>
-          <button id="projectEmailClearSelection">Clear Selection</button>
-          <button id="previewProjectEmails">Preview Selected Emails</button>
+          <button id="projectEmailSelectAll">Select all</button>
+          <button id="projectEmailClearSelection">Clear selection</button>
+          <button id="previewProjectEmails">Preview selected</button>
           <span class="hint" id="projectEmailCount" style="margin:0" aria-live="polite"></span>
         </div>
         <div id="projectEmailPreview" hidden style="margin-top:16px">
-          <h3>Preview each student email</h3>
-          <div id="projectEmailPreviewList"></div>
+          <h3>Email preview</h3>
+          <pre id="projectEmailPreviewList" class="notice" style="white-space:pre-wrap"></pre>
         </div>
         <div class="row" style="margin-top:16px">
-          <button class="primary" id="sendProjectEmails" disabled>Send selected</button>
-          <span class="hint" id="projectEmailProgress" role="status" aria-live="polite" style="margin:0"></span>
+          <button class="primary" id="sendProjectEmails" disabled>Send to selected</button>
         </div>
       </div>
 

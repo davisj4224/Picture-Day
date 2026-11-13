@@ -11,12 +11,15 @@ async function loadSelectionGuard() {
 
 test('Email keeps a simple project select, recipient, preview, and send workflow', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'views', 'admin.html'), 'utf8');
+  const adminJs = fs.readFileSync(path.join(__dirname, '..', 'public', 'admin.js'), 'utf8');
   const section = html.slice(html.indexOf('id="view-email"'), html.indexOf('id="view-settings"'));
 
   assert.match(section, /id="projectEmailProject"/);
   assert.match(section, /id="projectEmailRecipients"/);
   assert.match(section, /id="previewProjectEmails"/);
   assert.match(section, /id="sendProjectEmails"/);
+  assert.match(adminJs, /projectEmailPreview\.previews\[0\]/);
+  assert.doesNotMatch(adminJs, /projectEmailPreview\.previews\.map/);
   assert.doesNotMatch(section, /projectEmailQueue|queue-management|PARENT_EMAIL_PUBLISHED_HOST/);
   assert.doesNotMatch(section, /Recent delivery attempts|SMTP response \/ details|Excluded galleries/);
 });
