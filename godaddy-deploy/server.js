@@ -64,6 +64,10 @@ const {
 } = require('./lib/project-email.js');
 const { sendProjectEmailRecipients } = require('./lib/project-email-send.js');
 const {
+  loadProjectGalleryEmailContext,
+  loadProjectGalleryEmailHistory
+} = require('./lib/project-gallery-email.js');
+const {
   parseEmailProjectId,
   loadEmailRows,
   loadEmailStudent,
@@ -1219,6 +1223,74 @@ app.post(
   })
 );
 
+app.get(
+  '/api/projects/:projectId/students/:studentId/email-history',
+  requireStaff,
+  ok(async (req, res) => {
+    const projectId = Number(req.params.projectId);
+    const studentId = Number(req.params.studentId);
+    if (!Number.isSafeInteger(projectId) || projectId < 1 ||
+        !Number.isSafeInteger(studentId) || studentId < 1) {
+      return res.status(400).json({ error: 'Invalid project or student ID.' });
+    }
+
+    const history = await loadProjectGalleryEmailHistory(db, projectId, studentId);
+    if (!history) return res.status(404).json({ error: 'Project gallery not found.' });
+    res.json(history);
+  })
+);
+
+app.post(
+  '/api/projects/:projectId/students/:studentId/resend-gallery-email',
+  requireStaff,
+  ok(async (req, res) => {
+    const projectId = Number(req.params.projectId);
+    const studentId = Number(req.params.studentId);
+    if (!Number.isSafeInteger(projectId) || projectId < 1 ||
+        !Number.isSafeInteger(studentId) || studentId < 1) {
+      return res.status(400).json({ error: 'Invalid project or student ID.' });
+    }
+
+    const context = await loadProjectGalleryEmailContext(db, projectId, studentId);
+    if (!context) return res.status(404).json({ error: 'Project gallery not found.' });
+    if (context.reason) {
+      return res.status(409).json({ status: 'ineligible', error: context.reason });
+    }
+
+    const result = await sendProjectEmailRecipients({
+      db,
+      projectId,
+      studentIds: [studentId],
+      publicUrl: config().publicUrl,
+      emailConfig: config(),
+      branding: branding('published'),
+      mailer: mail
+    });
+    if (result.status === 'not-found') return res.status(404).json({ error: 'Project gallery not found.' });
+    if (result.status === 'archived') {
+      return res.status(409).json({ status: 'ineligible', error: 'Project is archived.' });
+    }
+    if (!result.attempted) {
+      const current = await loadProjectGalleryEmailContext(db, projectId, studentId);
+      if (!current) return res.status(404).json({ error: 'Project gallery not found.' });
+      if (current.reason) {
+        return res.status(409).json({ status: 'ineligible', error: current.reason });
+      }
+      return res.status(409).json({
+        status: 'pending',
+        error: 'A resend attempt for this recipient is already in progress.'
+      });
+    }
+    res.json({
+      attempted: result.attempted,
+      acceptedByGateway: result.acceptedByGateway,
+      failed: result.failed,
+      unresolved: result.unresolved,
+      skipped: result.skipped
+    });
+  })
+);
+
 app.get('/api/email/pending', requireStaff, ok(async (req, res) => {
   const projectId = parseEmailProjectId(req.query.projectId);
   if (projectId === undefined) return res.status(400).json({ error: 'Invalid project ID.' });
@@ -2093,6 +2165,7 @@ app.get('/api/projects/:id/students', requireStaff, ok(async (req, res) => {
   const rows = await db.prepare(
     `SELECT s.id, s.first_name, s.last_name, s.grade, s.teacher, s.active,
        ps.qr_code, ps.gallery_token, ps.expires_at, ps.published_at, ps.republish_required,
+       (ps.student_id IS NOT NULL) AS has_project_gallery,
        (SELECT COUNT(*) FROM photos ph
         WHERE ph.project_id = ? AND ph.student_id = s.id AND ph.is_marker = 0 AND ph.hidden = 0) AS photo_count
      FROM students s
@@ -2111,6 +2184,7 @@ app.get('/api/projects/:id/students', requireStaff, ok(async (req, res) => {
     expiresAt: s.expires_at,
     publishedAt: s.published_at,
     republishRequired: Boolean(s.republish_required),
+    hasProjectGallery: Boolean(s.has_project_gallery),
     photoCount: Number(s.photo_count || 0)
   })));
 }));

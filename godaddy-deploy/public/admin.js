@@ -233,6 +233,7 @@ function clearGallery() {
   $('#galleryStrip').innerHTML = '';
   $('#galleryActions').hidden = true;
   $('#galleryEmailHistory').hidden = true;
+  $('#resendGalleryEmail').hidden = true;
   $('#openLink').hidden = true;
 }
 
@@ -270,8 +271,9 @@ async function openProjectGallery(studentId) {
     : '';
   $('#openLink').hidden = !link;
   $('#openLink').href = link;
-  $('#galleryEmailHistory').hidden = true;
-  $('#resendGalleryEmail').hidden = true;
+  $('#galleryEmailHistory').hidden = !gallery?.hasProjectGallery;
+  $('#resendGalleryEmail').hidden = !gallery?.hasProjectGallery;
+  if (gallery?.hasProjectGallery) await loadProjectGalleryEmailHistory(project.id, Number(studentId));
 }
 
 /* ---------------------------------------------------------------- floor */
@@ -845,10 +847,25 @@ async function deletePhoto(id) {
 async function loadGalleryEmailHistory(id) {
   const history = await api(`/api/students/${id}/email-history`);
   if (Number($('#galleryStudent').value) !== Number(id)) return;
+  renderGalleryEmailHistory(history);
+}
+
+async function loadProjectGalleryEmailHistory(projectId, studentId) {
+  const history = await api(`/api/projects/${projectId}/students/${studentId}/email-history`);
+  if (
+    Number($('#projectGalleryStudent').value) !== Number(studentId) ||
+    state.activeProject?.id !== projectId
+  ) return;
+  renderGalleryEmailHistory(history);
+}
+
+function renderGalleryEmailHistory(history) {
   const latest = history.attempts[0];
   const summary = $('#galleryEmailSummary');
 
-  $('#resendGalleryEmail').disabled = !history.published || !history.hasValidRecipient;
+  $('#resendGalleryEmail').disabled = history.eligible === undefined
+    ? !history.published || !history.hasValidRecipient
+    : !history.eligible;
   $('#galleryEmailRecipient').textContent = history.recipientEmail
     ? `Current recipient on file: ${history.recipientEmail}`
     : 'No recipient email is on file.';
@@ -858,6 +875,9 @@ async function loadGalleryEmailHistory(id) {
     summary.classList.remove('bad');
   } else if (!history.hasValidRecipient) {
     summary.textContent = 'No valid recipient email is on file.';
+    summary.classList.add('bad');
+  } else if (history.eligible === false) {
+    summary.textContent = `Resending is unavailable: ${history.reason}`;
     summary.classList.add('bad');
   } else if (latest?.outcome === 'rejected') {
     const diagnostics = latest.diagnostic_json ? JSON.parse(latest.diagnostic_json) : null;
@@ -893,7 +913,7 @@ async function loadGalleryEmailHistory(id) {
           ? 'Gateway rejected'
           : attempt.outcome === 'unknown'
             ? 'Outcome unknown'
-            : attempt.status === 'sent'
+            : attempt.status === 'accepted' || attempt.status === 'sent'
               ? 'Gateway accepted'
               : attempt.status === 'failed'
                 ? 'Failed'
@@ -921,6 +941,18 @@ $('#resendGalleryEmail').addEventListener('click', async () => {
   if (!student || $('#resendGalleryEmail').disabled) return;
 
   $('#resendGalleryEmail').disabled = true;
+  if (student.projectId) {
+    try {
+      await api(`/api/projects/${student.projectId}/students/${student.id}/resend-gallery-email`, { method: 'POST' });
+      toast('Project gallery email attempt recorded.', 'good');
+      await loadProjectGalleryEmailHistory(student.projectId, student.id);
+    } catch (error) {
+      toast(error.message, 'bad');
+      await loadProjectGalleryEmailHistory(student.projectId, student.id);
+    }
+    return;
+  }
+
   try {
     const result = await api(`/api/students/${student.id}/resend-gallery-email`, { method: 'POST' });
     toast('Gallery email sent.', 'good');

@@ -162,6 +162,93 @@ test('project send isolates memberships and records each parent address with the
   ));
 });
 
+test('eligible resend uses the existing project token and the current parent email', async () => {
+  const db = createDb({
+    projects: new Map([[8, { id: 8, name: 'Winter Pictures', archived_at: null }]]),
+    memberships: [student(8, 12, TOKEN_ONE, {
+      parent_email: 'current-parent@example.test'
+    })],
+    attempts: [{
+      id: 1,
+      project_id: 8,
+      student_id: 12,
+      recipient_email: 'old-parent@example.test',
+      email_type: 'project-gallery',
+      attempted_at: Date.now() - 10_000,
+      status: 'accepted',
+      outcome: 'accepted'
+    }]
+  });
+  const sent = [];
+  const result = await sendProjectEmailRecipients(sendOptions(db, async (message) => {
+    sent.push(message);
+    return { outcome: 'accepted', messageId: 'resend-message' };
+  }));
+
+  assert.equal(result.acceptedByGateway, 1);
+  assert.equal(sent[0].to, 'current-parent@example.test');
+  assert.equal(sent[0].link, `https://photos.example.test/p/${TOKEN_ONE}`);
+  assert.deepEqual(db.attempts.map((attempt) => ({
+    project_id: attempt.project_id,
+    student_id: attempt.student_id,
+    email_type: attempt.email_type
+  })), [
+    { project_id: 8, student_id: 12, email_type: 'project-gallery' },
+    { project_id: 8, student_id: 12, email_type: 'project-gallery' }
+  ]);
+});
+
+test('a project and student mismatch cannot resend a gallery from another project', async () => {
+  const db = createDb({
+    projects: new Map([
+      [8, { id: 8, name: 'Winter Pictures', archived_at: null }],
+      [9, { id: 9, name: 'Spring Pictures', archived_at: null }]
+    ]),
+    memberships: [student(9, 12, TOKEN_TWO)]
+  });
+  let sends = 0;
+  const result = await sendProjectEmailRecipients(sendOptions(db, async () => {
+    sends++;
+    return { outcome: 'accepted', messageId: 'wrong-gallery' };
+  }, 8, [12]));
+
+  assert.equal(result.attempted, 0);
+  assert.equal(result.excluded, 1);
+  assert.equal(sends, 0);
+  assert.equal(db.attempts.length, 0);
+});
+
+test('unpublished, archived, expired, invalid-recipient, invalid-token, and republish-required galleries cannot resend', async () => {
+  const cases = [
+    { name: 'unpublished', studentOverrides: { published_at: null } },
+    { name: 'archived', projectOverrides: { archived_at: Date.now() } },
+    { name: 'expired', studentOverrides: { expires_at: 1 } },
+    { name: 'invalid recipient', studentOverrides: { parent_email: 'not-an-email' } },
+    { name: 'invalid token', studentOverrides: { gallery_token: 'invalid' } },
+    { name: 'republish required', studentOverrides: { republish_required: 1 } }
+  ];
+
+  for (const item of cases) {
+    const db = createDb({
+      projects: new Map([[8, {
+        id: 8,
+        name: 'Winter Pictures',
+        archived_at: null,
+        ...item.projectOverrides
+      }]]),
+      memberships: [student(8, 12, TOKEN_ONE, item.studentOverrides)]
+    });
+    const result = await sendProjectEmailRecipients(sendOptions(db, async () => {
+      assert.fail(`${item.name} gallery must not send`);
+    }));
+
+    assert.equal(result.attempted || 0, 0, `${item.name} gallery must not send`);
+    assert.equal(db.attempts.length, 0, `${item.name} gallery must not create an attempt`);
+    if (item.name === 'archived') assert.equal(result.status, 'archived');
+    else assert.equal(result.excluded, 1, `${item.name} gallery must be excluded`);
+  }
+});
+
 test('historical attempts can be deliberately resent without rewriting history', async () => {
   const attemptedAt = Date.now() - SENDING_LEASE_MS - 1;
   const history = [
