@@ -15,6 +15,15 @@ const adminHtml = fs.readFileSync(path.join(root, 'views', 'admin.html'), 'utf8'
 const adminJs = fs.readFileSync(path.join(root, 'public', 'admin.js'), 'utf8');
 const serverJs = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
 
+test('admin initialization does not reference removed role-specific email elements', () => {
+  const initialization = adminJs.slice(
+    adminJs.indexOf('/* ------------------------------------------------------------- startup */'),
+    adminJs.indexOf('/* ------------------------------------------------------------------ nav */')
+  );
+
+  assert.doesNotMatch(initialization, /#(?:projectEmailCard|legacyEmailCard|legacyEmailExport)\b/);
+});
+
 function fakeEmailDb() {
   const queries = [];
   const project = { id: 23, name: 'Spring Portraits', archived_at: null };
