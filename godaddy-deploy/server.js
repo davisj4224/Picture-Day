@@ -60,10 +60,16 @@ const {
 const {
   loadProjectEmailContext: getProjectEmailContext,
   buildProjectEmailPreviews,
-  buildProjectExportCsv,
   projectEmailDeliveryStatus
 } = require('./lib/project-email.js');
 const { sendProjectEmailRecipients } = require('./lib/project-email-send.js');
+const {
+  parseEmailProjectId,
+  loadEmailRows,
+  loadEmailStudent,
+  emailGalleryLink,
+  emailTemplateVariables
+} = require('./lib/email-workflow.js');
 const {
   SENDING_LEASE_MS,
   historicalProjectEmailState,
@@ -1143,8 +1149,8 @@ async function sendGalleryEmail(studentId) {
      WHERE id = ?`
   ).run(
     'sent',
-    result.outcome,
-    JSON.stringify(result.diagnostics),
+    result.outcome || 'accepted',
+    result.diagnostics ? JSON.stringify(result.diagnostics) : null,
     result.messageId,
     attempt.lastInsertRowid
   );
@@ -1209,57 +1215,40 @@ app.post(
 
     await db.prepare('INSERT INTO email_log (student_id, to_email, status, detail, sent_at) VALUES (?,?,?,?,?)')
       .run(student.id, result.student.parent_email, 'sent', mail.diagnosticSummary(result.diagnostics), Date.now());
-    return res.json({ status: 'sent', acceptedByGateway: true, attemptedAt: result.attemptedAt });
+    return res.json({ status: 'sent', attemptedAt: result.attemptedAt });
   })
 );
 
 app.get('/api/email/pending', requireStaff, ok(async (req, res) => {
-  const rows = await db
-    .prepare(
-      `${ROSTER_SQL} WHERE s.published_at IS NOT NULL AND s.parent_email IS NOT NULL
-       AND (SELECT COUNT(*) FROM email_log e WHERE e.student_id = s.id AND e.status='sent') = 0
-       ORDER BY s.last_name`
-    )
-    .all();
+  const projectId = parseEmailProjectId(req.query.projectId);
+  if (projectId === undefined) return res.status(400).json({ error: 'Invalid project ID.' });
+  const rows = await loadEmailRows(db, projectId);
+  if (rows === null) return res.status(404).json({ error: 'Project not found.' });
   res.json(rows.map(studentPublic));
 }));
 
 app.get('/api/email/export.csv', requireStaff, ok(async (req, res) => {
-  const rows = await db.prepare('SELECT * FROM students ORDER BY last_name, first_name').all();
   const cfg = config();
-  const projectId = req.query.projectId === undefined ? null : Number(req.query.projectId);
-  if (projectId !== null && (!Number.isSafeInteger(projectId) || projectId < 1)) {
-    return res.status(400).json({ error: 'Invalid project ID.' });
-  }
-  if (projectId !== null) {
-    const project = await db.prepare('SELECT id, name, archived_at FROM projects WHERE id = ?').get(projectId);
-    if (!project) return res.status(404).json({ error: 'Project not found.' });
-    const projectRows = await db.prepare(
-      `SELECT student_id, gallery_token, expires_at, published_at, republish_required
-       FROM project_students WHERE project_id = ?`
-    ).all(projectId);
-    const memberships = new Map(projectRows.map((row) => [Number(row.student_id), row]));
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', 'attachment; filename="gallery-links.csv"');
-    return res.send(buildProjectExportCsv(rows, project, memberships, cfg.publicUrl));
-  }
+  const projectId = parseEmailProjectId(req.query.projectId);
+  if (projectId === undefined) return res.status(400).json({ error: 'Invalid project ID.' });
+  const rows = await loadEmailRows(db, projectId, { pendingOnly: false });
+  if (rows === null) return res.status(404).json({ error: 'Project not found.' });
   const esc = (v) => {
     const value = String(v ?? '');
     const safe = /^[\u0000-\u0020]*[=+\-@]/.test(value) ? `'${value}` : value;
     return `"${safe.replace(/"/g, '""')}"`;
   };
-  const lines = [['Student', 'Grade', 'Teacher', 'Parent email', 'Gallery link', 'Expires', 'Gallery status'].map(esc).join(',')];
+  const lines = [['Student', 'Grade', 'Teacher', 'Parent email', 'Gallery link', 'Expires'].map(esc).join(',')];
   for (const s of rows) {
-    const published = Boolean(s.published_at && s.gallery_token);
+    const expiresAt = projectId === null ? s.expires_at : s.project_expires_at;
     lines.push(
       [
         `${s.first_name} ${s.last_name}`,
         s.grade,
         s.teacher,
         s.parent_email,
-        published ? galleryLink(s) : '',
-        published && s.expires_at ? new Date(s.expires_at).toLocaleDateString() : '',
-        published ? 'Published' : 'Not published'
+        emailGalleryLink(s, projectId, cfg.publicUrl),
+        expiresAt ? new Date(Number(expiresAt)).toLocaleDateString() : ''
       ]
         .map(esc)
         .join(',')
@@ -1759,41 +1748,71 @@ app.post(
   '/api/email/send',
   requireStaff,
   ok(async (req, res) => {
-    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Boolean) : [];
+    const projectId = parseEmailProjectId(req.body?.projectId);
+    if (projectId === undefined) return res.status(400).json({ error: 'Invalid project ID.' });
+    const ids = Array.isArray(req.body?.ids)
+      ? [...new Set(req.body.ids.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0))]
+      : [];
     if (!ids.length) return res.status(400).json({ error: 'Choose at least one student.' });
     if (!mail.configured()) return res.status(400).json({ error: 'SMTP is not configured in .env.' });
 
+    const cfg = config();
+    const publishedBranding = branding('published');
     const out = { sent: 0, failed: 0, errors: [] };
     for (const id of ids) {
-      let s;
-      try {
-        s = await galleryStudentForEmail(db, id);
-      } catch (error) {
+      const student = await loadEmailStudent(db, projectId, id);
+      if (!student || !String(student.parent_email || '').trim()) {
         out.failed++;
-        out.errors.push({ id, error: error.message });
+        out.errors.push({ id, error: 'missing email or published gallery' });
         continue;
       }
-      if (!s.parent_email) {
-        out.failed++;
-        out.errors.push({ id, error: 'missing email' });
-        continue;
-      }
+
+      const recipient = String(student.parent_email).trim();
+      const vars = emailTemplateVariables(student, projectId, publishedBranding, cfg.publicUrl);
+      let attemptId = null;
       try {
-        const result = await sendGalleryEmail(id);
-        await db.prepare('INSERT INTO email_log (student_id, to_email, status, detail, sent_at) VALUES (?,?,?,?,?)').run(
-          result.student.id,
-          result.student.parent_email,
-          'sent',
-          mail.diagnosticSummary(result.diagnostics),
-          Date.now()
-        );
+        if (projectId !== null) {
+          const attempt = await db.prepare(
+            `INSERT INTO gallery_email_attempts
+              (student_id, project_id, recipient_email, email_type, attempted_at, status)
+             VALUES (?, ?, ?, 'project-gallery', ?, 'pending')`
+          ).run(student.id, projectId, recipient, Date.now());
+          attemptId = attempt.lastInsertRowid;
+        }
+        await mail.send({
+          to: recipient,
+          from: cfg.emailFrom || process.env.SMTP_FROM || process.env.SMTP_USER,
+          replyTo: cfg.emailReplyTo,
+          subject: mail.render(cfg.emailSubject, vars),
+          text: mail.render(cfg.emailBody, vars),
+          link: vars.link,
+          palette: publishedBranding.palette
+        });
+        if (attemptId !== null) {
+          await db.prepare(
+            `UPDATE gallery_email_attempts
+             SET status = 'accepted', outcome = 'accepted'
+             WHERE id = ? AND email_type = 'project-gallery'`
+          ).run(attemptId);
+        } else {
+          await db.prepare('INSERT INTO email_log (student_id, to_email, status, sent_at) VALUES (?,?,?,?)')
+            .run(student.id, recipient, 'sent', Date.now());
+        }
         out.sent++;
-      } catch (e) {
-        await db.prepare('INSERT INTO email_log (student_id, to_email, status, detail, sent_at) VALUES (?,?,?,?,?)').run(
-          s.id, s.parent_email, 'failed', String(e.message).slice(0, 300), Date.now()
-        );
+      } catch (error) {
+        const detail = String(error.message || error).slice(0, 300);
+        if (attemptId !== null) {
+          await db.prepare(
+            `UPDATE gallery_email_attempts
+             SET status = 'failed', outcome = 'unknown', error_message = ?
+             WHERE id = ? AND email_type = 'project-gallery'`
+          ).run(detail, attemptId);
+        } else {
+          await db.prepare('INSERT INTO email_log (student_id, to_email, status, detail, sent_at) VALUES (?,?,?,?,?)')
+            .run(student.id, recipient, 'failed', detail, Date.now());
+        }
         out.failed++;
-        out.errors.push({ id, error: e.message });
+        out.errors.push({ id, error: detail });
       }
     }
     res.json(out);
