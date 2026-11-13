@@ -9,6 +9,7 @@ const {
   buildProjectEmailPreviews,
   loadProjectEmailContext,
   parseProjectEmailAddresses,
+  projectEmailDeliveryStatus,
   renderProjectEmail,
   resolveProjectEmailRecipients
 } = require('../lib/project-email');
@@ -50,6 +51,22 @@ test('project email content always names the project and uses the exact project 
   assert.ok(rendered.text.includes(rendered.link));
   assert.equal(rendered.text.includes(otherProjectToken), false);
   assert.equal(rendered.text.includes(legacyToken), false);
+});
+
+test('recipient status reflects the latest attempt without changing historical records', () => {
+  const history = [
+    { id: 2, status: 'failed', outcome: 'rejected' },
+    { id: 1, status: 'accepted', outcome: 'accepted' }
+  ];
+
+  assert.equal(projectEmailDeliveryStatus(history), 'failed');
+  assert.equal(projectEmailDeliveryStatus([history[1], history[0]]), 'sent');
+  assert.equal(projectEmailDeliveryStatus([{ status: 'pending', outcome: null }]), 'not-sent');
+  assert.equal(projectEmailDeliveryStatus([]), 'not-sent');
+  assert.deepEqual(history.map(({ id, status }) => ({ id, status })), [
+    { id: 2, status: 'failed' },
+    { id: 1, status: 'accepted' }
+  ]);
 });
 
 test('project-scoped database resolution cannot return another project student or token', async () => {
