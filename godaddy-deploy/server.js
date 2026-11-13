@@ -59,10 +59,10 @@ const {
   buildProjectEmailPreviews,
   buildProjectExportCsv
 } = require('./lib/project-email.js');
+const { sendProjectEmailRecipients } = require('./lib/project-email-send.js');
 const {
   SENDING_LEASE_MS,
   historicalProjectEmailState,
-  persistProjectEmailPreviews,
   deliverQueueRecipients,
   summarizeQueueRecipients
 } = require('./lib/project-email-queue.js');
@@ -1268,6 +1268,7 @@ app.get('/api/projects/:id/email/recipients', requireAdmin, ok(async (req, res) 
   if (!Number.isSafeInteger(projectId) || projectId < 1) return res.status(400).json({ error: 'Invalid project ID.' });
   const context = await getProjectEmailContext(db, projectId, config().publicUrl);
   if (!context) return res.status(404).json({ error: 'Project not found.' });
+  const deliveryStates = await projectEmailRecipientStates(projectId, context.recipients);
   res.json({
     project: { id: context.project.id, name: context.project.name, archived: Boolean(context.project.archived_at) },
     recipients: context.recipients.map((student) => ({
@@ -1276,7 +1277,8 @@ app.get('/api/projects/:id/email/recipients', requireAdmin, ok(async (req, res) 
       lastName: student.last_name,
       parentEmail: student.parent_email,
       recipientEmails: student.recipientEmails,
-      invalidEmails: student.invalidEmails
+      invalidEmails: student.invalidEmails,
+      deliveryStates: deliveryStates.get(Number(student.student_id))
     })),
     excluded: context.excluded.map((student) => ({
       id: student.student_id,
@@ -1311,6 +1313,29 @@ function selectedEmailIds(body) {
   return [...new Set(ids)];
 }
 
+async function projectEmailRecipientStates(projectId, recipients) {
+  const attempts = await db.prepare(
+    `SELECT id, student_id, recipient_email, attempted_at, status, outcome,
+       error_message, diagnostic_json, message_id
+     FROM gallery_email_attempts
+     WHERE project_id = ? AND email_type = 'project-gallery'
+     ORDER BY attempted_at DESC, id DESC`
+  ).all(projectId);
+  const groups = new Map();
+  for (const attempt of attempts) {
+    const key = `${attempt.student_id}:${String(attempt.recipient_email).toLowerCase()}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(attempt);
+  }
+  return new Map(recipients.map((student) => [
+    Number(student.student_id),
+    Object.fromEntries(student.recipientEmails.map((email) => {
+      const history = groups.get(`${student.student_id}:${email.toLowerCase()}`) || [];
+      return [email.toLowerCase(), historicalProjectEmailState(history)?.status || 'ready'];
+    }))
+  ]));
+}
+
 app.post('/api/projects/:id/email/preview', requireAdmin, ok(async (req, res) => {
   const projectId = Number(req.params.id);
   if (!Number.isSafeInteger(projectId) || projectId < 1) return res.status(400).json({ error: 'Invalid project ID.' });
@@ -1320,14 +1345,20 @@ app.post('/api/projects/:id/email/preview', requireAdmin, ok(async (req, res) =>
   const context = await getProjectEmailContext(db, projectId, cfg.publicUrl, Date.now(), ids);
   if (!context) return res.status(404).json({ error: 'Project not found.' });
   if (context.project.archived_at) return res.status(409).json({ error: 'Archived projects cannot be emailed.' });
+  const deliveryStates = await projectEmailRecipientStates(projectId, context.recipients);
+  const sendableRecipients = context.recipients.map((student) => ({
+    ...student,
+    recipientEmails: student.recipientEmails.filter((email) =>
+      ['ready', 'failed'].includes(deliveryStates.get(Number(student.student_id))?.[email.toLowerCase()])
+    )
+  })).filter((student) => student.recipientEmails.length);
   const previews = buildProjectEmailPreviews(
     context.project,
-    context.recipients,
+    sendableRecipients,
     cfg,
     branding('published'),
     cfg.publicUrl
   );
-  await persistProjectEmailPreviews(db, projectId, previews);
   res.json({
     projectName: context.project.name,
     galleryEmailCount: previews.length,
@@ -1340,6 +1371,34 @@ app.post('/api/projects/:id/email/preview', requireAdmin, ok(async (req, res) =>
     }))
   });
 }));
+
+app.post('/api/projects/:id/email/send', requireAdmin, ok(async (req, res) => {
+  const projectId = Number(req.params.id);
+  if (!Number.isSafeInteger(projectId) || projectId < 1) return res.status(400).json({ error: 'Invalid project ID.' });
+  const ids = selectedEmailIds(req.body);
+  if (!ids?.length) return res.status(400).json({ error: 'Choose at least one recipient using valid student IDs.' });
+  if (!mail.configured()) return res.status(400).json({ error: 'SMTP is not configured in .env.' });
+
+  const result = await sendProjectEmailRecipients({
+    db,
+    projectId,
+    studentIds: ids,
+    publicUrl: config().publicUrl,
+    emailConfig: config(),
+    branding: branding('published'),
+    mailer: mail
+  });
+  if (result.status === 'not-found') return res.status(404).json({ error: 'Project not found.' });
+  if (result.status === 'archived') return res.status(409).json({ error: 'Archived projects cannot be emailed.' });
+  res.json(result);
+}));
+
+const retiredProjectEmailQueue = (_req, res) => res.status(410).json({
+  error: 'Project email queues are retired. Use the project-scoped Email page instead.'
+});
+app.all('/api/projects/:id/email/queue', requireAdmin, retiredProjectEmailQueue);
+app.all('/api/projects/:id/email/queue/:itemId/:action', requireAdmin, retiredProjectEmailQueue);
+app.all('/api/projects/:id/email/send-all', requireAdmin, retiredProjectEmailQueue);
 
 async function loadProjectEmailQueue(projectId, itemId = null) {
   const items = await db.prepare(

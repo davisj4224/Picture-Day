@@ -16,6 +16,7 @@ const {
 const appRoot = path.join(__dirname, '..');
 const databaseSource = fs.readFileSync(path.join(appRoot, 'lib', 'db.js'), 'utf8');
 const serverSource = fs.readFileSync(path.join(appRoot, 'server.js'), 'utf8');
+const projectEmailSendSource = fs.readFileSync(path.join(appRoot, 'lib', 'project-email-send.js'), 'utf8');
 
 test('schema is additive and includes all persistent application tables', () => {
   for (const table of [
@@ -46,13 +47,25 @@ test('private photo files are guarded from static access and keep route-based ac
   assert.doesNotMatch(serverSource, /\/api\/debug\/storage-check-7f3a9c/);
 });
 
-test('project email preview builds and persists messages without calling the email gateway', () => {
+test('project email preview is read-only and direct sends use project-scoped history', () => {
   const start = serverSource.indexOf("app.post('/api/projects/:id/email/preview'");
   const end = serverSource.indexOf('async function loadProjectEmailQueue', start);
   assert.ok(start >= 0 && end > start, 'project preview route is present');
-  assert.doesNotMatch(serverSource.slice(start, end), /mail\.send\s*\(/);
-  assert.match(serverSource.slice(start, end), /buildProjectEmailPreviews/);
-  assert.match(serverSource.slice(start, end), /persistProjectEmailPreviews/);
+  const emailRoutes = serverSource.slice(start, end);
+  assert.doesNotMatch(emailRoutes, /mail\.send\s*\(/);
+  assert.match(emailRoutes, /buildProjectEmailPreviews/);
+  assert.doesNotMatch(emailRoutes, /persistProjectEmailPreviews/);
+  assert.match(emailRoutes, /sendProjectEmailRecipients/);
+  assert.match(projectEmailSendSource, /project_id = \? AND student_id = \? AND email_type = 'project-gallery'/);
+});
+
+test('obsolete project queue routes return Gone before old send and retry handlers', () => {
+  const handler = serverSource.indexOf('const retiredProjectEmailQueue');
+  const guard = serverSource.indexOf("app.all('/api/projects/:id/email/queue'");
+  const oldSend = serverSource.indexOf("app.post('/api/projects/:id/email/send-all'");
+  const oldRetry = serverSource.indexOf("app.post('/api/projects/:id/email/queue/:itemId/retry'");
+  assert.ok(handler >= 0 && handler < guard && guard < oldSend && guard < oldRetry);
+  assert.match(serverSource.slice(handler, guard), /status\(410\)/);
 });
 
 const testDatabase = process.env.DB_TEST_NAME || '';
