@@ -1129,7 +1129,6 @@ async function loadProjectEmailRecipients() {
   $('#projectEmailPreviewList').innerHTML = '';
   $('#projectEmailStatus').textContent = '';
   $('#projectEmailCount').textContent = '';
-  $('#projectEmailProgress').textContent = '';
   $('#projectEmailExport').hidden = true;
   $('#sendProjectEmails').disabled = true;
   if (!id) {
@@ -1151,12 +1150,8 @@ async function loadProjectEmailRecipients() {
   body.innerHTML = recipients.length
     ? recipients.map((student) => {
         const eligibleCount = student.recipientEmails.length;
-        const addresses = student.recipientEmails.map((email) => {
-          const status = student.deliveryStates[email.toLowerCase()] || 'not-sent';
-          const label = status === 'sent' ? 'Sent' : status === 'failed' ? 'Failed' : 'Not Sent';
-          return `${esc(email)} <span class="hint">— ${label}</span>`;
-        }).join('<br>');
-        return `<tr><td><input type="checkbox" data-project-email="${student.id}"
+      const addresses = student.recipientEmails.map(esc).join('<br>');
+        return `<tr><td><input type="checkbox" data-project-email="${student.id}" checked
         data-recipient-count="${eligibleCount}"
         style="width:auto" ${eligibleCount ? '' : 'disabled'}
         aria-label="Select ${esc(student.firstName)} ${esc(student.lastName)}"></td>
@@ -1188,7 +1183,8 @@ function updateProjectEmailCount() {
     projectEmailPreview.projectId === $('#projectEmailProject').value &&
     selectedIds.length === projectEmailPreview.ids.length &&
     selectedIds.every((id) => projectEmailPreview.ids.includes(id));
-  $('#sendProjectEmails').disabled = projectEmailSending || !recipientCount || !previewMatches;
+  $('#sendProjectEmails').disabled =
+    projectEmailSending || !recipientCount || !previewMatches || !projectEmailPreview?.previews.length;
 }
 
 $('#projectEmailProject').addEventListener('change', () => {
@@ -1244,18 +1240,12 @@ $('#previewProjectEmails').addEventListener('click', async () => {
       !ids.every((id) => selectedProjectEmailIds().includes(id))
     ) return;
     projectEmailPreview = { ...preview, projectId, ids };
-    $('#projectEmailPreviewList').innerHTML = projectEmailPreview.previews.length
-      ? projectEmailPreview.previews.map((preview) => `<article class="notice" style="margin:10px 0">
-          <strong>${esc(preview.student)}</strong><br>
-          <span class="hint">To: ${preview.recipientEmails.map(esc).join(', ')}</span>
-          ${preview.invalidEmails.length
-            ? `<p class="hint">Invalid addresses excluded: ${preview.invalidEmails.map(esc).join(', ')}</p>`
-            : ''}
-          <p><strong>Subject:</strong> ${esc(preview.subject)}</p>
-          <p><strong>Gallery:</strong> <a href="${esc(preview.galleryLink)}" target="_blank" rel="noopener">${esc(preview.galleryLink)}</a></p>
-          <pre style="white-space:pre-wrap">${esc(preview.text)}</pre>
-        </article>`).join('')
-      : '<p class="hint">No selected galleries were eligible to preview. Review the exclusion reasons above.</p>';
+    const sample = projectEmailPreview.previews[0];
+    $('#projectEmailPreviewList').textContent = sample
+      ? `Project: ${projectEmailPreview.projectName}\nRecipients: ${projectEmailPreview.recipientCount}\n` +
+        `Preview for: ${sample.student}\nTo: ${sample.recipientEmails.join(', ')}\n` +
+        `Subject: ${sample.subject}\nGallery link: ${sample.galleryLink}\n\n${sample.text}`
+      : 'No selected galleries are eligible to preview.';
     $('#projectEmailPreview').hidden = false;
     updateProjectEmailCount();
   } catch (error) {
@@ -1274,13 +1264,15 @@ $('#sendProjectEmails').addEventListener('click', async () => {
     projectEmailPreview.projectId === projectId &&
     ids.length === projectEmailPreview.ids.length &&
     ids.every((id) => projectEmailPreview.ids.includes(id));
-  if (!previewMatches) return toast('Preview the selected emails before sending.', 'bad');
+  if (!previewMatches || !projectEmailPreview.previews.length) {
+    return toast('Preview the selected emails before sending.', 'bad');
+  }
   const selected = $$('#projectEmailRecipients input[data-project-email]:checked');
   const recipientCount = selected.reduce((count, checkbox) => count + Number(checkbox.dataset.recipientCount || 0), 0);
   const projectLabel = $('#projectEmailProject option:checked').textContent || 'Project email';
   if (!confirm(`Send ${recipientCount} parent/guardian email(s) for this project?`)) return;
 
-  const actionVersion = ++projectEmailActionVersion;
+  projectEmailActionVersion++;
   projectEmailSending = true;
   projectEmailPreview = null;
   $('#projectEmailPreview').hidden = true;
@@ -1291,15 +1283,9 @@ $('#sendProjectEmails').addEventListener('click', async () => {
       body: { ids }
     });
     toast(
-      `${result.projectName}: Sent ${result.acceptedByGateway}; Failed ${result.failed}; ` +
-      `Not Sent ${result.unresolved + result.skipped}. Inbox delivery is not confirmed.`,
+      `${result.acceptedByGateway} email(s) accepted by the gateway${result.failed ? `; ${result.failed} failed` : ''}.`,
       result.failed || result.unresolved ? 'bad' : 'good'
     );
-    if (actionVersion === projectEmailActionVersion && projectId === $('#projectEmailProject').value) {
-      $('#projectEmailProgress').textContent =
-        `Sent ${result.acceptedByGateway}; Failed ${result.failed}; ` +
-        `Not Sent ${result.unresolved + result.skipped}.`;
-    }
   } catch (error) {
     toast(`${projectLabel}: ${error.message}`, 'bad');
   } finally {
