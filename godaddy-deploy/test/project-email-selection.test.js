@@ -26,3 +26,16 @@ test('clearing the project selection invalidates responses already in flight', a
 
   assert.equal(guard.isCurrent(pendingRequest, ''), false);
 });
+
+test('email project options include the original archived project and every newer project', async () => {
+  const { projectEmailOptions } = await loadSelectionGuard();
+  const projects = projectEmailOptions([
+    { id: 1, name: 'Original Picture Day Project', archived_at: 1 },
+    { id: 2, name: 'Fall Pictures', archived_at: null },
+    { id: 3, name: 'Spring Pictures', archived_at: null }
+  ]);
+
+  assert.deepEqual(projects.map(({ id }) => id), [1, 2, 3]);
+  assert.equal(projects[0].displayName, 'Original Picture Day Project (Archived)');
+  assert.equal(projects[1].displayName, 'Fall Pictures');
+});

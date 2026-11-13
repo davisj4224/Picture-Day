@@ -1,6 +1,6 @@
 'use strict';
 
-const { historicalProjectEmailState } = require('./project-email-queue');
+const { SENDING_LEASE_MS } = require('./project-email-queue');
 const {
   loadProjectEmailContext,
   parseProjectEmailAddresses,
@@ -35,8 +35,10 @@ async function claimProjectEmailAttempt(db, projectId, studentId, recipientEmail
        ORDER BY attempted_at DESC, id DESC
        FOR UPDATE`
     ).all(projectId, studentId, recipientEmail);
-    const historicalState = historicalProjectEmailState(history);
-    if (historicalState && historicalState.status !== 'failed') return null;
+    const activeAttempt = history.find((attempt) =>
+      attempt.status === 'pending' && Number(attempt.attempted_at) >= now - SENDING_LEASE_MS
+    );
+    if (activeAttempt) return null;
 
     const attempt = await tx.prepare(
       `INSERT INTO gallery_email_attempts

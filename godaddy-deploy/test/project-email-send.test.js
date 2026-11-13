@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const { sendProjectEmailRecipients } = require('../lib/project-email-send');
+const { SENDING_LEASE_MS } = require('../lib/project-email-queue');
 
 const TOKEN_ONE = 'P'.repeat(32);
 const TOKEN_TWO = 'Q'.repeat(32);
@@ -159,8 +160,8 @@ test('project send isolates memberships and records each parent address with the
   ));
 });
 
-test('accepted, pending, and unresolved history are suppressed while confirmed rejection can be explicitly retried', async () => {
-  const attemptedAt = 1_700_000_000_000;
+test('historical attempts can be deliberately resent without rewriting history', async () => {
+  const attemptedAt = Date.now() - SENDING_LEASE_MS - 1;
   const history = [
     { id: 1, project_id: 8, student_id: 12, recipient_email: 'accepted@example.test',
       email_type: 'project-gallery', attempted_at: attemptedAt, status: 'accepted', outcome: 'accepted' },
@@ -184,22 +185,22 @@ test('accepted, pending, and unresolved history are suppressed while confirmed r
     return { outcome: 'accepted', messageId: `message-${sent.length}`, diagnostics: { outcome: 'accepted' } };
   }));
 
-  assert.deepEqual(sent, ['rejected@example.test']);
-  assert.equal(result.attempted, 1);
-  assert.equal(result.skipped, 3);
+  assert.deepEqual(sent, [
+    'accepted@example.test',
+    'pending@example.test',
+    'unknown@example.test',
+    'rejected@example.test'
+  ]);
+  assert.equal(result.attempted, 4);
+  assert.equal(result.skipped, 0);
+  assert.equal(result.acceptedByGateway, 4);
   assert.equal(history[2].outcome, 'unknown', 'unresolved historical evidence is not rewritten');
   assert.equal(history[3].outcome, 'rejected', 'the rejected historical attempt remains intact');
-  assert.equal(db.attempts.length, 5);
-  assert.equal(db.attempts[4].status, 'accepted');
-
-  const second = await sendProjectEmailRecipients(sendOptions(db, async () => {
-    assert.fail('accepted and unresolved recipients must not be sent again');
-  }));
-  assert.equal(second.attempted, 0);
-  assert.equal(second.skipped, 4);
+  assert.equal(db.attempts.length, 8);
+  assert.ok(db.attempts.slice(4).every((attempt) => attempt.status === 'accepted'));
 });
 
-test('gateway rejection is recorded as retryable while unknown outcomes stay suppressed', async () => {
+test('failed and unresolved attempts can both be deliberately retried', async () => {
   const db = createDb({
     projects: new Map([[8, { id: 8, name: 'Winter Pictures', archived_at: null }]]),
     memberships: [student(8, 12, TOKEN_ONE, {
@@ -219,12 +220,46 @@ test('gateway rejection is recorded as retryable while unknown outcomes stay sup
     { status: 'unresolved', outcome: 'unknown' }
   ]);
   const retryResult = await sendProjectEmailRecipients(sendOptions(db, async (message) => {
-    assert.equal(message.to, 'rejected@example.test');
+    assert.ok(['rejected@example.test', 'uncertain@example.test'].includes(message.to));
     return { outcome: 'accepted', messageId: 'retry-accepted', diagnostics: { outcome: 'accepted' } };
   }));
-  assert.equal(retryResult.attempted, 1);
-  assert.equal(retryResult.skipped, 1);
+  assert.equal(retryResult.attempted, 2);
+  assert.equal(retryResult.skipped, 0);
   assert.equal(db.attempts[1].outcome, 'unknown');
+  assert.deepEqual(db.attempts.slice(2).map((attempt) => attempt.status), ['accepted', 'accepted']);
+});
+
+test('a recent pending claim blocks a simultaneous resend but an expired pending claim does not', async () => {
+  const createDbWithPending = (attemptedAt) => createDb({
+    projects: new Map([[8, { id: 8, name: 'Winter Pictures', archived_at: null }]]),
+    memberships: [student(8, 12, TOKEN_ONE)],
+    attempts: [{
+      id: 1,
+      project_id: 8,
+      student_id: 12,
+      recipient_email: 'parent12@example.test',
+      email_type: 'project-gallery',
+      attempted_at: attemptedAt,
+      status: 'pending',
+      outcome: null
+    }]
+  });
+  const activeDb = createDbWithPending(Date.now());
+  const activeResult = await sendProjectEmailRecipients(sendOptions(activeDb, async () => {
+    assert.fail('a recent pending attempt must prevent duplicate delivery');
+  }));
+  assert.equal(activeResult.skipped, 1);
+  assert.equal(activeDb.attempts.length, 1);
+
+  const staleDb = createDbWithPending(Date.now() - SENDING_LEASE_MS - 1);
+  const staleResult = await sendProjectEmailRecipients(sendOptions(staleDb, async () => ({
+    outcome: 'accepted',
+    messageId: 'stale-retry',
+    diagnostics: { outcome: 'accepted' }
+  })));
+  assert.equal(staleResult.acceptedByGateway, 1);
+  assert.equal(staleDb.attempts.length, 2);
+  assert.equal(staleDb.attempts[0].status, 'pending', 'the stale historical attempt is retained');
 });
 
 test('archived projects and unpublished galleries are never sent', async () => {

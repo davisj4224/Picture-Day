@@ -46,6 +46,14 @@ function projectEmailExclusionReason(project, row, now) {
   return null;
 }
 
+function projectEmailDeliveryStatus(attempts) {
+  const latest = attempts[0];
+  if (!latest) return 'not-sent';
+  if (latest.outcome === 'accepted' || latest.status === 'accepted' || latest.status === 'sent') return 'sent';
+  if (latest.outcome === 'rejected' || latest.status === 'failed') return 'failed';
+  return 'not-sent';
+}
+
 function resolveProjectEmailRecipients(project, rows, publicUrl, now = Date.now(), requestedIds = null) {
   const requested = requestedIds === null ? null : new Set(requestedIds.map(Number));
   const recipients = [];
@@ -182,6 +190,7 @@ module.exports = {
   validRecipientEmail,
   parseProjectEmailAddresses,
   projectEmailExclusionReason,
+  projectEmailDeliveryStatus,
   projectGalleryLink,
   resolveProjectEmailRecipients,
   loadProjectEmailContext,

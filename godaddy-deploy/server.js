@@ -57,7 +57,8 @@ const {
 const {
   loadProjectEmailContext: getProjectEmailContext,
   buildProjectEmailPreviews,
-  buildProjectExportCsv
+  buildProjectExportCsv,
+  projectEmailDeliveryStatus
 } = require('./lib/project-email.js');
 const { sendProjectEmailRecipients } = require('./lib/project-email-send.js');
 const {
@@ -1331,7 +1332,7 @@ async function projectEmailRecipientStates(projectId, recipients) {
     Number(student.student_id),
     Object.fromEntries(student.recipientEmails.map((email) => {
       const history = groups.get(`${student.student_id}:${email.toLowerCase()}`) || [];
-      return [email.toLowerCase(), historicalProjectEmailState(history)?.status || 'ready'];
+      return [email.toLowerCase(), projectEmailDeliveryStatus(history)];
     }))
   ]));
 }
@@ -1345,16 +1346,9 @@ app.post('/api/projects/:id/email/preview', requireAdmin, ok(async (req, res) =>
   const context = await getProjectEmailContext(db, projectId, cfg.publicUrl, Date.now(), ids);
   if (!context) return res.status(404).json({ error: 'Project not found.' });
   if (context.project.archived_at) return res.status(409).json({ error: 'Archived projects cannot be emailed.' });
-  const deliveryStates = await projectEmailRecipientStates(projectId, context.recipients);
-  const sendableRecipients = context.recipients.map((student) => ({
-    ...student,
-    recipientEmails: student.recipientEmails.filter((email) =>
-      ['ready', 'failed'].includes(deliveryStates.get(Number(student.student_id))?.[email.toLowerCase()])
-    )
-  })).filter((student) => student.recipientEmails.length);
   const previews = buildProjectEmailPreviews(
     context.project,
-    sendableRecipients,
+    context.recipients,
     cfg,
     branding('published'),
     cfg.publicUrl

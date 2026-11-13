@@ -1,6 +1,9 @@
 import { $, $$, api, session, toast, esc, fmtDate } from '/assets/common.js';
 import { scan, ready as readerReady } from '/assets/qr-scan.js';
-import { createProjectEmailSelectionGuard } from '/assets/project-email-selection.mjs';
+import {
+  createProjectEmailSelectionGuard,
+  projectEmailOptions
+} from '/assets/project-email-selection.mjs';
 
 const LEGACY_GALLERY_NAME = 'Original Picture Day (Existing Photos)';
 
@@ -1104,13 +1107,13 @@ const projectEmailSelectionGuard = createProjectEmailSelectionGuard();
 
 async function loadProjectEmailProjects() {
   const projects = await api('/api/projects');
-  const available = projects.filter((project) => !project.archived_at);
+  const available = projectEmailOptions(projects);
   const select = $('#projectEmailProject');
   const selected = select.value || (state.activeProject && !state.activeProject.archived_at
     ? String(state.activeProject.id)
     : '');
   select.innerHTML = '<option value="">Choose a project…</option>' +
-    available.map((project) => `<option value="${project.id}">${esc(project.name)}</option>`).join('');
+    available.map((project) => `<option value="${project.id}">${esc(project.displayName)}</option>`).join('');
   select.value = available.some((project) => String(project.id) === selected) ? selected : '';
   await loadProjectEmailRecipients();
 }
@@ -1154,25 +1157,14 @@ async function loadProjectEmailRecipients() {
   const galleryWord = recipients.length === 1 ? 'gallery' : 'galleries';
   body.innerHTML = recipients.length
     ? recipients.map((student) => {
-        const eligibleCount = student.recipientEmails.filter((email) =>
-          ['ready', 'failed'].includes(student.deliveryStates[email.toLowerCase()] || 'ready')
-        ).length;
+        const eligibleCount = student.recipientEmails.length;
         const addresses = student.recipientEmails.map((email) => {
-          const status = student.deliveryStates[email.toLowerCase()] || 'ready';
-          const note = status === 'accepted'
-            ? ' — accepted by gateway; not resent'
-            : status === 'failed'
-              ? ' — rejected; selecting retries'
-              : status === 'unresolved'
-                ? ' — outcome unknown; not resent'
-                : '';
-          return `${esc(email)}${note ? `<span class="hint">${esc(note)}</span>` : ''}`;
+          const status = student.deliveryStates[email.toLowerCase()] || 'not-sent';
+          const label = status === 'sent' ? 'Sent' : status === 'failed' ? 'Failed' : 'Not Sent';
+          return `${esc(email)} <span class="hint">— ${label}</span>`;
         }).join('<br>');
-        const retryCount = student.recipientEmails.filter((email) =>
-          student.deliveryStates[email.toLowerCase()] === 'failed'
-        ).length;
         return `<tr><td><input type="checkbox" data-project-email="${student.id}"
-        data-recipient-count="${eligibleCount}" data-retry-count="${retryCount}"
+        data-recipient-count="${eligibleCount}"
         style="width:auto" ${eligibleCount ? '' : 'disabled'}
         aria-label="Select ${esc(student.firstName)} ${esc(student.lastName)}"></td>
         <td>${esc(student.lastName)}, ${esc(student.firstName)}</td>
@@ -1227,10 +1219,8 @@ function selectedProjectEmailIds() {
 function updateProjectEmailCount() {
   const selected = $$('#projectEmailRecipients input[data-project-email]:checked');
   const recipientCount = selected.reduce((count, checkbox) => count + Number(checkbox.dataset.recipientCount || 0), 0);
-  const retryCount = selected.reduce((count, checkbox) => count + Number(checkbox.dataset.retryCount || 0), 0);
   $('#projectEmailCount').textContent =
-    `${selected.length} galleries selected; ${recipientCount} eligible parent/guardian deliveries.` +
-    `${retryCount ? ` ${retryCount} confirmed rejection(s) will be retried.` : ''}`;
+    `${selected.length} galleries selected; ${recipientCount} parent/guardian email(s) selected.`;
   const selectedIds = selectedProjectEmailIds();
   const previewMatches = projectEmailPreview &&
     projectEmailPreview.projectId === $('#projectEmailProject').value &&
@@ -1326,13 +1316,8 @@ $('#sendProjectEmails').addEventListener('click', async () => {
   if (!previewMatches) return toast('Preview the selected emails before sending.', 'bad');
   const selected = $$('#projectEmailRecipients input[data-project-email]:checked');
   const recipientCount = selected.reduce((count, checkbox) => count + Number(checkbox.dataset.recipientCount || 0), 0);
-  const retryCount = selected.reduce((count, checkbox) => count + Number(checkbox.dataset.retryCount || 0), 0);
   const projectLabel = $('#projectEmailProject option:checked').textContent || 'Project email';
-  if (!confirm(
-    `Send ${recipientCount} parent/guardian email(s) for this project? ` +
-    `${retryCount ? `${retryCount} confirmed rejection(s) may be retried. ` : ''}` +
-    'Accepted, pending, and unresolved addresses will not be sent again.'
-  )) return;
+  if (!confirm(`Send ${recipientCount} parent/guardian email(s) for this project?`)) return;
 
   const actionVersion = ++projectEmailActionVersion;
   projectEmailSending = true;
@@ -1345,14 +1330,14 @@ $('#sendProjectEmails').addEventListener('click', async () => {
       body: { ids }
     });
     toast(
-      `${result.projectName}: ${result.acceptedByGateway} accepted by gateway; ${result.failed} rejected; ` +
-      `${result.unresolved} unresolved; ${result.skipped} previously attempted and not resent. Inbox delivery is not confirmed.`,
+      `${result.projectName}: Sent ${result.acceptedByGateway}; Failed ${result.failed}; ` +
+      `Not Sent ${result.unresolved + result.skipped}. Inbox delivery is not confirmed.`,
       result.failed || result.unresolved ? 'bad' : 'good'
     );
     if (actionVersion === projectEmailActionVersion && projectId === $('#projectEmailProject').value) {
       $('#projectEmailProgress').textContent =
-        `${result.attempted} address(es) attempted; ${result.acceptedByGateway} accepted by gateway; ` +
-        `${result.failed} rejected; ${result.unresolved} unresolved; ${result.skipped} not resent.`;
+        `Sent ${result.acceptedByGateway}; Failed ${result.failed}; ` +
+        `Not Sent ${result.unresolved + result.skipped}.`;
     }
   } catch (error) {
     toast(`${projectLabel}: ${error.message}`, 'bad');
