@@ -427,7 +427,7 @@ school-picture-day/
 ├── lib/
 │   ├── db.js              schema, settings, code generation
 │   ├── cards.js           the printable QR card PDF
-│   └── mail.js            SMTP and the message template
+│   └── mail.js            GoDaddy email gateway and message template
 ├── views/                 the pages
 ├── public/                CSS and browser JavaScript
 │   ├── app.css            staff screens

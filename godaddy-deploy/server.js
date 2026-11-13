@@ -1366,7 +1366,6 @@ app.post('/api/projects/:id/email/send', requireAdmin, ok(async (req, res) => {
   if (!Number.isSafeInteger(projectId) || projectId < 1) return res.status(400).json({ error: 'Invalid project ID.' });
   const ids = selectedEmailIds(req.body);
   if (!ids?.length) return res.status(400).json({ error: 'Choose at least one recipient using valid student IDs.' });
-  if (!mail.configured()) return res.status(400).json({ error: 'SMTP is not configured in .env.' });
 
   const result = await sendProjectEmailRecipients({
     db,
@@ -1658,7 +1657,6 @@ async function processProjectEmailQueue(projectId, {
         return updated.changes === 1 ? attempt.lastInsertRowid : false;
       }),
       send: (recipient) => {
-        if (!mail.configured()) throw new Error('Email is not configured.');
         return mail.send({
           to: recipient.recipient_email,
           subject: recipient.subject,
@@ -1754,7 +1752,6 @@ app.post(
       ? [...new Set(req.body.ids.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0))]
       : [];
     if (!ids.length) return res.status(400).json({ error: 'Choose at least one student.' });
-    if (!mail.configured()) return res.status(400).json({ error: 'SMTP is not configured in .env.' });
 
     const cfg = config();
     const publishedBranding = branding('published');
@@ -1781,7 +1778,7 @@ app.post(
         }
         await mail.send({
           to: recipient,
-          from: cfg.emailFrom || process.env.SMTP_FROM || process.env.SMTP_USER,
+          from: cfg.emailFrom,
           replyTo: cfg.emailReplyTo,
           subject: mail.render(cfg.emailSubject, vars),
           text: mail.render(cfg.emailBody, vars),

@@ -324,7 +324,7 @@ async function loadStats() {
 
   if (!s.emails.configured) {
     const n = $('#emailNotice');
-    n.textContent = 'Email is turned off — SMTP is not set in .env. You can still export the links as a CSV and send them from the school mail system.';
+    n.textContent = 'Email delivery is unavailable. You can still export the links as a CSV and send them from the school mail system.';
     n.hidden = false;
   }
 }
@@ -860,10 +860,16 @@ async function loadGalleryEmailHistory(id) {
     summary.textContent = 'No valid recipient email is on file.';
     summary.classList.add('bad');
   } else if (latest?.outcome === 'rejected') {
-    summary.textContent = `Latest attempt: SMTP rejected the message${latest.diagnostic_json ? ` (${JSON.parse(latest.diagnostic_json).smtpCode || 'code unavailable'})` : ''}.`;
+    const diagnostics = latest.diagnostic_json ? JSON.parse(latest.diagnostic_json) : null;
+    const detail = diagnostics?.status
+      ? ` (HTTP ${diagnostics.status})`
+      : diagnostics?.smtpCode
+        ? ` (SMTP ${diagnostics.smtpCode})`
+        : '';
+    summary.textContent = `Latest attempt: email delivery rejected the message${detail}.`;
     summary.classList.add('bad');
   } else if (latest?.outcome === 'accepted' || latest?.status === 'sent') {
-    summary.textContent = 'Latest attempt: SMTP accepted the message.';
+    summary.textContent = 'Latest attempt: the email gateway accepted the message.';
     summary.classList.remove('bad');
   } else if (latest?.outcome === 'unknown') {
     const diagnostics = latest.diagnostic_json ? JSON.parse(latest.diagnostic_json) : null;
@@ -884,15 +890,16 @@ async function loadGalleryEmailHistory(id) {
     ? history.attempts.map((attempt) => {
         const diagnostics = attempt.diagnostic_json ? JSON.parse(attempt.diagnostic_json) : null;
         const status = attempt.outcome === 'rejected'
-          ? 'SMTP rejected'
+          ? 'Gateway rejected'
           : attempt.outcome === 'unknown'
             ? 'Outcome unknown'
             : attempt.status === 'sent'
-              ? 'SMTP accepted'
+              ? 'Gateway accepted'
               : attempt.status === 'failed'
                 ? 'Failed'
                 : 'Pending / unknown';
         const details = [
+          diagnostics?.status ? `HTTP ${diagnostics.status}` : '',
           diagnostics?.smtpCode ? `SMTP ${diagnostics.smtpCode}` : '',
           diagnostics?.smtpResponse || diagnostics?.gatewayMessage || attempt.error_message || '',
           diagnostics?.errorCode || '',
