@@ -80,7 +80,7 @@ read a deployed `.env` file.
 | `DB_USER` | Automatically injected by GoDaddy |
 | `DB_PASSWORD` | Automatically injected by GoDaddy |
 | `PICTUREDAY_ASSET_DIR` | Persistent asset root; set to `/private/pictureday` (the production fallback if unset) |
-| `PARENT_EMAIL_PUBLISHED_HOST` | Leave unset to disable parent-email sending and preview. Enable only with the exact Published hostname, without scheme or port, after verifying Preview uses a different hostname. |
+| `PARENT_EMAIL_PUBLISHED_HOST` | Optional Published hostname override, with or without an `https://` scheme. If unset, the configured family-facing public URL is used; Preview and other hostnames are rejected. |
 
 Keep credentials in the hosting environment settings, never in source control.
 GoDaddy injects the database connection values; the app has no
@@ -91,14 +91,10 @@ first-run schema. Existing tables and records are never dropped or reseeded.
 The checked-in GoDaddy workflow deploys one application root, and the existing
 runtime exposes `NODE_ENV` but no Preview/Published marker. Because Preview and
 Published share the database, project email preview and sending and all other
-email-sending endpoints fail closed unless `PARENT_EMAIL_PUBLISHED_HOST` is
-configured. The server allows those operations only when the request hostname
-matches that exact value. Configure it under cPanel **Setup Node.js App →
-Environment variables** for the Published application only, and only if
-Preview requests arrive with a different hostname. If Preview shares the
-Published hostname or that distinction cannot be verified, leave the setting
-unset; preview and sending must remain disabled. `NODE_ENV=production` alone
-does not enable these operations or distinguish Preview from Published.
+email-sending endpoints are allowed only when the request hostname matches
+`PARENT_EMAIL_PUBLISHED_HOST`, or the configured family-facing public URL when
+that override is unset. An override may be a bare hostname or full URL.
+Preview and other hostnames remain rejected.
 
 ### Persistent uploaded files
 

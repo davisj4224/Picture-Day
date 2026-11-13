@@ -16,7 +16,10 @@ const { parse: parseCsv } = require('csv-parse/sync');
 
 const { db, initialize, config, branding, setSetting, newQrCode, newGalleryToken, DEFAULT_BRANDING } = require('./lib/db.js');
 const { requireAdmin } = require('./lib/admin-auth.js');
-const { parentEmailOperationGuard } = require('./lib/parent-email-availability.js');
+const {
+  isParentEmailOperation,
+  parentEmailOperationGuard
+} = require('./lib/parent-email-availability.js');
 const cards = require('./lib/cards.js');
 const mail = require('./lib/mail.js');
 const {
@@ -208,7 +211,10 @@ app.use((req, res, next) => {
   return res.status(403).json({ error: 'Your session expired. Reload the page and sign in again.' });
 });
 
-app.use(parentEmailOperationGuard);
+app.use((req, res, next) => {
+  if (!isParentEmailOperation(req)) return next();
+  return parentEmailOperationGuard(req, res, next, config().publicUrl);
+});
 
 const loginLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,

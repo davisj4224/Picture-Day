@@ -4,7 +4,7 @@ function isParentEmailOperation(req) {
   const method = String(req.method || '').toUpperCase();
   const path = String(req.path || '');
   if (method === 'GET' && /^\/api\/projects\/\d+\/email\/queue$/.test(path)) return true;
-  if (method === 'POST' && /^\/api\/projects\/\d+\/email\/(?:preview|send-all|queue\/\d+\/(?:remove|retry|retry-unresolved))$/.test(path)) {
+  if (method === 'POST' && /^\/api\/projects\/\d+\/email\/(?:preview|send|send-all|queue\/\d+\/(?:remove|retry|retry-unresolved))$/.test(path)) {
     return true;
   }
   if (method === 'POST' && /^\/api\/students\/\d+\/resend-gallery-email$/.test(path)) return true;
@@ -12,14 +12,25 @@ function isParentEmailOperation(req) {
 }
 
 function normalizeHostname(value) {
-  const hostname = String(value || '').trim().toLowerCase().replace(/\.$/, '');
-  return /[/:,\s]/.test(hostname) ? '' : hostname;
+  const configured = String(value || '').trim();
+  if (!configured) return '';
+  try {
+    const url = new URL(configured.includes('://') ? configured : `https://${configured}`);
+    if (
+      !['http:', 'https:'].includes(url.protocol) ||
+      url.username ||
+      url.password
+    ) return '';
+    return url.hostname.toLowerCase().replace(/\.$/, '');
+  } catch {
+    return '';
+  }
 }
 
-function parentEmailOperationGuard(req, res, next) {
+function parentEmailOperationGuard(req, res, next, configuredPublishedUrl = '') {
   if (!isParentEmailOperation(req)) return next();
 
-  const publishedHost = normalizeHostname(process.env.PARENT_EMAIL_PUBLISHED_HOST);
+  const publishedHost = normalizeHostname(process.env.PARENT_EMAIL_PUBLISHED_HOST || configuredPublishedUrl);
   const requestHost = normalizeHostname(req.hostname);
   if (!publishedHost || !requestHost || requestHost !== publishedHost) {
     return res.status(503).json({

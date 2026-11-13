@@ -299,11 +299,9 @@
       <div class="notice" id="emailNotice" hidden></div>
 
       <div class="card" id="projectEmailCard" hidden>
-        <h2>Project parent emails</h2>
-        <p class="hint">Select published galleries for one active project. Every preview and email uses that project's gallery link and only that student's parent/guardian addresses.</p>
-        <p class="notice">Preview and Published share a database, and this runtime has no built-in Preview/Published marker. Project email preview and sending are disabled unless the server is configured with <code>PARENT_EMAIL_PUBLISHED_HOST</code> for the exact Published hostname; other hostnames are rejected. Do not configure it unless Preview uses a different hostname.</p>
+        <h2>Parent emails</h2>
         <div class="field">
-          <label for="projectEmailProject">Photo shoot project</label>
+          <label for="projectEmailProject">Project</label>
           <select id="projectEmailProject"><option value="">Choose a project…</option></select>
         </div>
         <a class="btn small" id="projectEmailExport" hidden>Export this project's links as CSV</a>
@@ -318,13 +316,6 @@
           <button id="previewProjectEmails">Preview Selected Emails</button>
           <span class="hint" id="projectEmailCount" style="margin:0" aria-live="polite"></span>
         </div>
-        <div id="projectEmailExcluded" hidden style="margin-top:16px">
-          <h3>Excluded galleries</h3>
-          <div style="overflow-x:auto"><table>
-            <thead><tr><th>Student</th><th>Parent/guardian email on file</th><th>Why excluded</th></tr></thead>
-            <tbody></tbody>
-          </table></div>
-        </div>
         <div id="projectEmailPreview" hidden style="margin-top:16px">
           <h3>Preview each student email</h3>
           <div id="projectEmailPreviewList"></div>
@@ -333,13 +324,6 @@
           <button class="primary" id="sendProjectEmails" disabled>Send selected</button>
           <span class="hint" id="projectEmailProgress" role="status" aria-live="polite" style="margin:0"></span>
         </div>
-        <p class="hint">“Accepted by gateway” does not confirm delivery to a recipient's inbox.</p>
-        <p class="hint">Accepted, pending, and unresolved addresses are not sent again. Selecting a confirmed rejection explicitly retries that address.</p>
-        <h3>Recent delivery attempts</h3>
-        <div style="overflow-x:auto"><table id="projectEmailHistory">
-          <thead><tr><th>Attempted</th><th>Student</th><th>Recipient</th><th>Outcome</th><th>SMTP response / details</th></tr></thead>
-          <tbody><tr><td colspan="5" class="hint">Choose a project to view attempts.</td></tr></tbody>
-        </table></div>
       </div>
 
       <div class="card" id="legacyEmailCard">

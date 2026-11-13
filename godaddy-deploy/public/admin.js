@@ -1131,9 +1131,6 @@ async function loadProjectEmailRecipients() {
   $('#projectEmailCount').textContent = '';
   $('#projectEmailProgress').textContent = '';
   $('#projectEmailExport').hidden = true;
-  $('#projectEmailExcluded').hidden = true;
-  $('#projectEmailHistory tbody').innerHTML =
-    '<tr><td colspan="5" class="hint">Choose a project to view attempts.</td></tr>';
   $('#sendProjectEmails').disabled = true;
   if (!id) {
     body.innerHTML = '<tr><td colspan="3" class="hint">Choose a project to see eligible galleries.</td></tr>';
@@ -1141,12 +1138,8 @@ async function loadProjectEmailRecipients() {
   }
   body.innerHTML = '<tr><td colspan="3" class="hint">Loading this project…</td></tr>';
   let result;
-  let attempts;
   try {
-    [result, attempts] = await Promise.all([
-      api(`/api/projects/${id}/email/recipients`),
-      api(`/api/projects/${id}/email/attempts`)
-    ]);
+    result = await api(`/api/projects/${id}/email/recipients`);
   } catch (error) {
     if (!projectEmailSelectionGuard.isCurrent(request, select.value)) return;
     throw error;
@@ -1174,39 +1167,8 @@ async function loadProjectEmailRecipients() {
       }).join('')
     : '<tr><td colspan="3" class="hint">No eligible published galleries with valid parent/guardian addresses.</td></tr>';
   $('#projectEmailStatus').textContent = `${result.project.name}: ${recipients.length} eligible published ${galleryWord}.`;
-  $('#projectEmailExcluded').hidden = !result.excluded.length;
-  $('#projectEmailExcluded tbody').innerHTML = result.excluded.length
-    ? result.excluded.map((student) => `<tr><td>${esc(`${student.lastName || ''}, ${student.firstName || ''}`.trim())}</td>
-        <td>${esc(student.parentEmail || '')}</td><td>${esc(student.reason)}</td></tr>`).join('')
-    : '<tr><td colspan="3" class="hint">No galleries are excluded.</td></tr>';
   $('#projectEmailExport').href = `/api/email/export.csv?projectId=${encodeURIComponent(id)}`;
   $('#projectEmailExport').hidden = false;
-  $('#projectEmailHistory tbody').innerHTML = attempts.length
-    ? attempts.map((attempt) => {
-        const diagnostics = attempt.diagnostic_json ? JSON.parse(attempt.diagnostic_json) : null;
-        const recipient = diagnostics?.recipients?.[0];
-        const outcome = attempt.outcome || diagnostics?.outcome || 'unknown';
-        const label = outcome === 'accepted'
-          ? 'Accepted by gateway'
-          : outcome === 'rejected'
-            ? 'SMTP rejected'
-            : 'Outcome unknown';
-        const details = [
-          diagnostics?.smtpCode ? `SMTP ${diagnostics.smtpCode}` : '',
-          diagnostics?.smtpResponse || diagnostics?.gatewayMessage || attempt.error_message || '',
-          diagnostics?.errorCode || '',
-          diagnostics?.errorType || '',
-          diagnostics?.transportMessage || ''
-        ].filter(Boolean).join(' — ');
-        return `<tr>
-          <td>${esc(new Date(attempt.attempted_at).toLocaleString())}</td>
-          <td>${esc(attempt.last_name)}, ${esc(attempt.first_name)}</td>
-          <td>${esc(recipient?.recipient || '')}${recipient?.domain ? ` (${esc(recipient.domain)})` : ''}</td>
-          <td>${esc(label)}</td>
-          <td>${esc(details)}</td>
-        </tr>`;
-      }).join('')
-    : '<tr><td colspan="5" class="hint">No project email attempts recorded.</td></tr>';
   updateProjectEmailCount();
 }
 
@@ -1295,7 +1257,6 @@ $('#previewProjectEmails').addEventListener('click', async () => {
         </article>`).join('')
       : '<p class="hint">No selected galleries were eligible to preview. Review the exclusion reasons above.</p>';
     $('#projectEmailPreview').hidden = false;
-    $('#projectEmailExcluded').hidden = projectEmailPreview.excluded.length === 0;
     updateProjectEmailCount();
   } catch (error) {
     if (actionVersion === projectEmailActionVersion && projectId === $('#projectEmailProject').value) {
